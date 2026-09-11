@@ -1,0 +1,10 @@
+{
+  "id": "cairn-vault-linter",
+  "name": "Cairn Vault Linter",
+  "version": "3.3.0",
+  "minAppVersion": "1.5.0",
+  "description": "Offline vault health report for broken links, duplicate references, block IDs, and dangling stubs.",
+  "author": "Rahul",
+  "authorUrl": "https://github.com/tutivsoft-com",
+  "isDesktopOnly": false
+}
