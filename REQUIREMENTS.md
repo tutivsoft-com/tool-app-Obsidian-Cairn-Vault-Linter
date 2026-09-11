@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: planning
+Status: implemented — 3.3.0 MVP released
 
 ## Product promise
 
@@ -93,4 +93,3 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - Approved repairs show a before-and-after preview, create recovery data, and support rollback.
 - Malformed or unreadable files are reported rather than stopping the scan.
 - The complete MVP works offline with no AI account and no paid credits.
-
