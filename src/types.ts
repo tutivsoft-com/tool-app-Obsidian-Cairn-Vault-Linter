@@ -34,6 +34,11 @@ export interface CairnSettings {
   lastFileSignatures: Record<string, string>;
   previousFindingCount: number;
   ignoredFindings: IgnoredFinding[];
+  constanceDeviceId: string;
+  billingEmail: string;
+  freeRepairDay: string;
+  freeRepairBatchesUsed: number;
+  purchasedRepairBatches: number;
 }
 
 export interface IgnoredFinding {
@@ -140,5 +145,10 @@ export const DEFAULT_SETTINGS: CairnSettings = {
   lastScanDurationMs: 0,
   lastFileSignatures: {},
   previousFindingCount: 0,
-  ignoredFindings: []
+  ignoredFindings: [],
+  constanceDeviceId: "",
+  billingEmail: "",
+  freeRepairDay: "",
+  freeRepairBatchesUsed: 0,
+  purchasedRepairBatches: 0
 };

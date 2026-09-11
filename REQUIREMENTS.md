@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: implemented — 3.3.0 MVP released
+Status: implemented — 3.4.2 billing release
 
 ## Product promise
 
@@ -65,6 +65,17 @@ The user must be able to enable or disable each check and configure the definiti
 32. Provide a compact dashboard showing total findings, high-severity findings, and trend since the previous scan.
 33. Keep rule configuration local to the vault or plugin settings and make it easy to reset.
 
+## Billing requirements
+
+34. Keep scans, previews, exports, ignores, rollback, and read-only/local inspection free.
+35. Treat one credit as authorization for one user-approved repair batch that actually writes note changes.
+36. Grant 3 free repair batches per local calendar day, then use one-time $1/100 and $10/1,000 credit packs.
+37. Use a random, persistent per-install device ID and optional billing email; never embed a shared secret in the plugin.
+38. Sync the purchased balance through the unsigned browser-relay entitlement endpoint and include a fresh event ID for every spend.
+39. Guard checkout against invalid email, missing device identity, and unprovisioned/wrong price IDs.
+40. Authorize at the safe write boundary after a fresh no-op/stale-plan check; never charge an empty or no-op repair batch.
+41. Refuse a paid repair when spend verification fails or balance is confirmed insufficient; do not fail open into note writes.
+
 ## AI decision
 
 AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty stubs can be determined from vault data. Introducing AI would make results less predictable and would send private note content away from the vault. Future optional explanations may be considered only if they can be generated locally without weakening the deterministic audit.
@@ -84,6 +95,7 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - Cloud scanning or uploading vault content.
 - AI-generated repairs without deterministic verification.
 - Reformatting an entire vault as a side effect of linting.
+- Subscriptions, license keys, or billing for scans and reports.
 
 ## Acceptance criteria
 
@@ -93,3 +105,5 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - Approved repairs show a before-and-after preview, create recovery data, and support rollback.
 - Malformed or unreadable files are reported rather than stopping the scan.
 - The complete MVP works offline with no AI account and no paid credits.
+- The free daily repair allowance works locally; paid repair writes require confirmed credit authorization.
+- Checkout uses exact Cairn-provisioned price IDs, remains guarded against catalog misconfiguration, and no no-op repair consumes a credit.

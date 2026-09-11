@@ -2,7 +2,7 @@
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
-The product promise is simple: every result is concrete and reviewable, and no note is changed unless the user explicitly approves a previewed repair. Cairn does not use AI, cloud services, paid credits, or vault uploads.
+The product promise is simple: every result is concrete and reviewable, and no note is changed unless the user explicitly approves a previewed repair. Scanning and inspection stay local. Billing only authorizes an approved repair batch; Cairn never uploads note contents.
 
 ## Install and build
 
@@ -27,6 +27,12 @@ Open **Cairn Vault Linter** from the ribbon or command palette. The dashboard pr
 
 The command **Cairn: Scan changed notes (incremental)** uses file signatures from the last scan and retains previous results for notes that did not change. Run a full scan after large renames or structural changes for a fresh vault-wide index.
 
+## Billing
+
+Scans, previews, exports, ignores, rollback, and other read-only/local inspection are free. A repair credit authorizes one user-approved repair batch that actually writes one or more note changes; empty, stale, or no-op batches are not charged. Each install receives 3 free repair batches per local calendar day. After that, one-time packs are $1 for 100 credits or $10 for 1,000 credits.
+
+Cairn uses TutivSoft's unsigned browser-relay billing endpoints for checkout, balance sync, and event-id-based spend. The plugin stores a random per-install device ID and optional billing email, but no shared secret. If billing is unavailable or a balance cannot be confirmed, Cairn refuses the paid repair and leaves notes unchanged. Checkout uses the exact Cairn-provisioned price IDs and retains runtime guards against invalid catalog configuration.
+
 ## Checks
 
 Each check can be independently enabled in settings: broken wikilinks, broken Markdown links, broken embeds, missing headings, missing block IDs, missing aliases, duplicate links, empty stubs, duplicate block IDs, duplicate heading IDs, and malformed links.
@@ -35,9 +41,9 @@ Ignored folders and simple `*` file patterns are vault-relative. Hidden files an
 
 ## Privacy and threat model
 
-Scanning reads vault files through the Obsidian API and stores only local plugin settings, file signatures, ignored-finding reasons, and the last summary. Exported reports contain the findings the user chose to export. Repair rollback data is stored locally in the plugin folder because it must retain the exact pre-repair text. No network request is made by the plugin.
+Scanning reads vault files through the Obsidian API and stores only local plugin settings, file signatures, ignored-finding reasons, and the last summary. Exported reports contain the findings the user chose to export. Repair rollback data is stored locally in the plugin folder because it must retain the exact pre-repair text. Billing is the only network activity, and it sends billing metadata only as described above.
 
-See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for the threat model and safe-repair boundaries.
+See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and [`docs/PRIVACY.md`](docs/PRIVACY.md) for the threat model, billing data flow, and safe-repair boundaries.
 
 ## Development
 
@@ -47,7 +53,7 @@ npm test
 npm run build
 ```
 
-Tests cover deterministic path/heading parsing, link resolution, duplicate detection, empty-stub rules, ignored findings, CSV escaping, and journal-safe repair behavior. The release artifact is built from the mirrored TypeScript under `publish/src/`.
+Tests cover deterministic path/heading parsing, link resolution, duplicate detection, empty-stub rules, ignored findings, CSV escaping, journal-safe repair behavior, daily free allowances, device IDs, spend payloads, and the no-op billing guard. The release artifact is built from the mirrored TypeScript under `publish/src/`.
 
 ## License
 
