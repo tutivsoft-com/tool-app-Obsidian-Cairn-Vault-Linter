@@ -3,10 +3,6 @@
 ## 3.4.4 - 2026-09-12
 
 - Incremented and synchronized the canonical, package, manifest, and publish version surfaces after the billing rollout. No runtime behavior changed in this metadata release.
-
-
-## Unreleased — 2026-09-12
-
 - Synchronized the publish billing mirror with durable spend event IDs so
   retries reconcile the original attempt instead of creating a new charge.
 - Added regression coverage for the stable event-ID payload.
