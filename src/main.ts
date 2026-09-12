@@ -40,7 +40,8 @@ function mergeSettings(data: Partial<CairnSettings> | null | undefined): CairnSe
     ...data,
     checks: { ...DEFAULT_CHECKS, ...(data?.checks || {}) },
     lastFileSignatures: data?.lastFileSignatures || {},
-    ignoredFindings: data?.ignoredFindings || []
+    ignoredFindings: data?.ignoredFindings || [],
+    pendingRepairCharges: data?.pendingRepairCharges || []
   };
 }
 
@@ -285,7 +286,12 @@ export default class CairnVaultLinterPlugin extends Plugin {
           failed.push(`${plan.path}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      if (!changed.length && reservation.source === "free") await reservation.rollback();
+      if (!changed.length) {
+        await reservation.rollback();
+      } else {
+        const billingResult = await reservation.commit();
+        if (billingResult.kind === "pending") new Notice("Cairn repair applied. Billing is pending and will retry automatically.");
+      }
       new Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
       await this.refreshDashboard();
     } catch (error) {
@@ -602,6 +608,6 @@ class CairnSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxCharacters = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxMeaningfulLines = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => { this.plugin.settings.reportFolder = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
+    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
   }
 }

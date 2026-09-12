@@ -117,14 +117,14 @@ export type SpendResult =
   | { kind: "insufficient" }
   | { kind: "error" };
 
-export async function spendConstanceCredits(deviceId: string, amount: number, requester: BillingRequester = defaultRequester): Promise<SpendResult> {
+export async function spendConstanceCredits(deviceId: string, amount: number, requester: BillingRequester = defaultRequester, stableEventId = eventId()): Promise<SpendResult> {
   if (!Number.isInteger(amount) || amount !== 1) return { kind: "error" };
   try {
     const response = await requester({
       url: `${BASE_URL}/api/v1/public/browser/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: eventId() }),
+      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: stableEventId }),
       throw: false,
     });
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };

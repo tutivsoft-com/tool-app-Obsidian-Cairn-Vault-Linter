@@ -39,6 +39,7 @@ export interface CairnSettings {
   freeRepairDay: string;
   freeRepairBatchesUsed: number;
   purchasedRepairBatches: number;
+  pendingRepairCharges: string[];
 }
 
 export interface IgnoredFinding {
@@ -150,5 +151,6 @@ export const DEFAULT_SETTINGS: CairnSettings = {
   billingEmail: "",
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
-  purchasedRepairBatches: 0
+  purchasedRepairBatches: 0,
+  pendingRepairCharges: []
 };

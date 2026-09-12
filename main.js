@@ -434,7 +434,7 @@ async function fetchBalance(deviceId, requester = defaultRequester) {
   if (response.status < 200 || response.status >= 300) throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
   return Math.max(0, Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance) || 0);
 }
-async function spendConstanceCredits(deviceId, amount, requester = defaultRequester) {
+async function spendConstanceCredits(deviceId, amount, requester = defaultRequester, stableEventId = eventId()) {
   var _a, _b, _c;
   if (!Number.isInteger(amount) || amount !== 1) return { kind: "error" };
   try {
@@ -442,7 +442,7 @@ async function spendConstanceCredits(deviceId, amount, requester = defaultReques
       url: `${BASE_URL}/api/v1/public/browser/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: eventId() }),
+      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: stableEventId }),
       throw: false
     });
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };
@@ -553,7 +553,8 @@ var DEFAULT_SETTINGS = {
   billingEmail: "",
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
-  purchasedRepairBatches: 0
+  purchasedRepairBatches: 0,
+  pendingRepairCharges: []
 };
 
 // publish/src/main.ts
@@ -578,7 +579,8 @@ function mergeSettings(data) {
     ...data,
     checks: { ...DEFAULT_CHECKS, ...(data == null ? void 0 : data.checks) || {} },
     lastFileSignatures: (data == null ? void 0 : data.lastFileSignatures) || {},
-    ignoredFindings: (data == null ? void 0 : data.ignoredFindings) || []
+    ignoredFindings: (data == null ? void 0 : data.ignoredFindings) || [],
+    pendingRepairCharges: (data == null ? void 0 : data.pendingRepairCharges) || []
   };
 }
 function escapeCsv(value) {
@@ -804,7 +806,12 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
           failed.push(`${plan.path}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      if (!changed.length && reservation.source === "free") await reservation.rollback();
+      if (!changed.length) {
+        await reservation.rollback();
+      } else {
+        const billingResult = await reservation.commit();
+        if (billingResult.kind === "pending") new import_obsidian.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
+      }
       new import_obsidian.Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
       await this.refreshDashboard();
     } catch (error) {
@@ -1205,7 +1212,7 @@ var CairnSettingTab = class extends import_obsidian.PluginSettingTab {
       await this.plugin.saveData(this.plugin.settings);
     }));
     new import_obsidian.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
-      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches };
+      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges };
       this.plugin.settings = { ...mergeSettings(null), ...billing };
       await this.plugin.saveData(this.plugin.settings);
       this.display();
