@@ -1,9 +1,9 @@
 # Changelog
 
-## 3.4.5 — 2026-09-13
+## 3.4.5 - 2026-09-20
 
-- Synchronized the public release version in `VERSION` and `manifest.json`.
-- No runtime behavior changed in this metadata-only release.
+- Synchronized the Cairn source and publish version surfaces and prepared the
+  next source-inclusive TutivSoft release.
 
 ## 3.4.4 - 2026-09-12
 
