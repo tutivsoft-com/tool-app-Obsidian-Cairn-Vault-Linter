@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: implemented — 3.4.5 billing release
+Status: implemented — 3.4.6 billing release
 
 ## Product promise
 

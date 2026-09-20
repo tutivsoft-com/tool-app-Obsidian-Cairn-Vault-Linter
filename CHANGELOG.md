@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.6 - 2026-09-20
+
+- Prepared the next patch version across the public release metadata.
+- No runtime behavior changed in this documentation and version bump.
+
 ## 3.4.5 - 2026-09-20
 
 - Synchronized the Cairn source and publish version surfaces and prepared the
