@@ -7,6 +7,9 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -29,6 +32,182 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+// publish/src/constance-account.ts
+var constance_account_exports = {};
+__export(constance_account_exports, {
+  CONSTANCE_ACCOUNT_BASE_URL: () => CONSTANCE_ACCOUNT_BASE_URL,
+  addBillingAccountSettings: () => addBillingAccountSettings,
+  claimAccountFreeUsage: () => claimAccountFreeUsage,
+  signInBillingAccount: () => signInBillingAccount,
+  spendAccountCredits: () => spendAccountCredits,
+  validateBillingSession: () => validateBillingSession
+});
+function errorDetail(response, fallback) {
+  var _a, _b;
+  return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
+}
+async function authenticate(mode, email, password, installationId) {
+  var _a;
+  const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
+  }
+  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+  if (!token) throw new Error("Constance did not return an account token.");
+  return token;
+}
+async function linkInstallation(adapter, token) {
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      app_id: adapter.appId,
+      installation_id: adapter.installationId,
+      legacy_external_customer_id: adapter.installationId,
+      platform: "obsidian",
+      app_version: adapter.appVersion || void 0
+    }),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Installation link failed (HTTP ${response.status})`));
+  }
+}
+async function signInBillingAccount(adapter, password, mode) {
+  const email = adapter.state.billingEmail.trim().toLowerCase();
+  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
+  if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
+  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
+  const token = await authenticate(mode, email, password, adapter.installationId);
+  await linkInstallation(adapter, token);
+  adapter.state.billingEmail = email;
+  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccountLinked = true;
+  await adapter.persist();
+  await adapter.syncBalance();
+}
+async function validateBillingSession(adapter) {
+  const token = adapter.state.billingAccessToken;
+  if (!token || !adapter.state.billingAccountLinked || !adapter.installationId) return false;
+  const query = new URLSearchParams({ app_id: adapter.appId, installation_id: adapter.installationId });
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+    throw: false
+  });
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    adapter.state.billingAccountLinked = false;
+    adapter.state.billingAccessToken = "";
+    await adapter.persist();
+    return false;
+  }
+  return response.status >= 200 && response.status < 300;
+}
+async function claimAccountFreeUsage(state, appId, installationId, eventId2, amount) {
+  var _a, _b;
+  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
+      throw: false
+    });
+    if (response.status === 402) return { kind: "insufficient" };
+    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300) return { kind: "error" };
+    return { kind: "ok", remaining: Math.max(0, Number((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.remaining) || 0) };
+  } catch (error) {
+    console.error("Constance account free-usage claim failed", error);
+    return { kind: "error" };
+  }
+}
+async function spendAccountCredits(state, appId, installationId, eventId2, amount) {
+  var _a, _b, _c;
+  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
+      throw: false
+    });
+    if (response.status === 402) return { kind: "insufficient" };
+    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300) return { kind: "error" };
+    const balance = Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance);
+    return Number.isFinite(balance) ? { kind: "ok", balance: Math.max(0, balance) } : { kind: "error" };
+  } catch (error) {
+    console.error("Constance authenticated credit spend failed", error);
+    return { kind: "error" };
+  }
+}
+function addBillingAccountSettings(containerEl, adapter) {
+  let password = "";
+  new import_obsidian.Setting(containerEl).setName("Billing account email").setDesc("Used for sign-in, purchase restore, and checkout. Reinstalling no longer creates a new free allowance.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).onChange(async (value) => {
+    adapter.state.billingEmail = value.trim();
+    await adapter.persist();
+  }));
+  new import_obsidian.Setting(containerEl).setName("Billing account password").setDesc("Used only for this sign-in request. The password is never saved by the plugin.").addText((text) => {
+    text.inputEl.type = "password";
+    text.setPlaceholder("At least 8 characters").onChange((value) => {
+      password = value;
+    });
+  });
+  const status = adapter.state.billingAccountLinked ? "Signed in and linked" : "Not signed in";
+  new import_obsidian.Setting(containerEl).setName("Billing account").setDesc(`${status}. The saved bearer session can restore purchases; your password is not stored.`).addButton((button) => button.setButtonText("Sign in").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "login");
+      new import_obsidian.Notice("Billing account signed in and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing sign-in failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Create account").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "register");
+      new import_obsidian.Notice("Billing account created and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing account creation failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
+    var _a;
+    adapter.state.billingAccessToken = "";
+    adapter.state.billingAccountLinked = false;
+    await adapter.persist();
+    new import_obsidian.Notice("Billing account signed out on this installation.");
+    (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+  }));
+}
+var import_obsidian, CONSTANCE_ACCOUNT_BASE_URL;
+var init_constance_account = __esm({
+  "publish/src/constance-account.ts"() {
+    "use strict";
+    import_obsidian = require("obsidian");
+    CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
+  }
+});
 
 // publish/src/main.ts
 var main_exports = {};
@@ -368,129 +547,11 @@ function canRollback(current, recordedAfter) {
   return current === recordedAfter;
 }
 
-// publish/src/constance-account.ts
-var import_obsidian = require("obsidian");
-var CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
-function errorDetail(response, fallback) {
-  var _a, _b;
-  return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
-}
-async function authenticate(mode, email, password, installationId) {
-  var _a;
-  const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
-  const response = await (0, import_obsidian.requestUrl)({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    throw: false
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
-  }
-  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
-  if (!token) throw new Error("Constance did not return an account token.");
-  return token;
-}
-async function linkInstallation(adapter, token) {
-  const response = await (0, import_obsidian.requestUrl)({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      app_id: adapter.appId,
-      installation_id: adapter.installationId,
-      legacy_external_customer_id: adapter.installationId,
-      platform: "obsidian",
-      app_version: adapter.appVersion || void 0
-    }),
-    throw: false
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(errorDetail(response, `Installation link failed (HTTP ${response.status})`));
-  }
-}
-async function signInBillingAccount(adapter, password, mode) {
-  const email = adapter.state.billingEmail.trim().toLowerCase();
-  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
-  if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
-  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
-  const token = await authenticate(mode, email, password, adapter.installationId);
-  await linkInstallation(adapter, token);
-  adapter.state.billingEmail = email;
-  adapter.state.billingAccessToken = token;
-  adapter.state.billingAccountLinked = true;
-  await adapter.persist();
-  await adapter.syncBalance();
-}
-async function claimAccountFreeUsage(state, appId, installationId, eventId2, amount) {
-  var _a, _b;
-  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
-  try {
-    const response = await (0, import_obsidian.requestUrl)({
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
-      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
-      throw: false
-    });
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    return { kind: "ok", remaining: Math.max(0, Number((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.remaining) || 0) };
-  } catch (error) {
-    console.error("Constance account free-usage claim failed", error);
-    return { kind: "error" };
-  }
-}
-function addBillingAccountSettings(containerEl, adapter) {
-  let password = "";
-  new import_obsidian.Setting(containerEl).setName("Billing account email").setDesc("Used for sign-in, purchase restore, and checkout. Reinstalling no longer creates a new free allowance.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).onChange(async (value) => {
-    adapter.state.billingEmail = value.trim();
-    await adapter.persist();
-  }));
-  new import_obsidian.Setting(containerEl).setName("Billing account password").setDesc("Used only for this sign-in request. The password is never saved by the plugin.").addText((text) => {
-    text.inputEl.type = "password";
-    text.setPlaceholder("At least 8 characters").onChange((value) => {
-      password = value;
-    });
-  });
-  const status = adapter.state.billingAccountLinked ? "Signed in and linked" : "Not signed in";
-  new import_obsidian.Setting(containerEl).setName("Billing account").setDesc(`${status}. The saved bearer session can restore purchases; your password is not stored.`).addButton((button) => button.setButtonText("Sign in").onClick(async () => {
-    var _a;
-    button.setDisabled(true);
-    try {
-      await signInBillingAccount(adapter, password, "login");
-      new import_obsidian.Notice("Billing account signed in and this installation was linked.");
-      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
-    } catch (error) {
-      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing sign-in failed.");
-    } finally {
-      button.setDisabled(false);
-    }
-  })).addButton((button) => button.setButtonText("Create account").onClick(async () => {
-    var _a;
-    button.setDisabled(true);
-    try {
-      await signInBillingAccount(adapter, password, "register");
-      new import_obsidian.Notice("Billing account created and this installation was linked.");
-      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
-    } catch (error) {
-      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing account creation failed.");
-    } finally {
-      button.setDisabled(false);
-    }
-  })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
-    var _a;
-    adapter.state.billingAccessToken = "";
-    adapter.state.billingAccountLinked = false;
-    await adapter.persist();
-    new import_obsidian.Notice("Billing account signed out on this installation.");
-    (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
-  }));
-}
-
 // publish/src/billing.ts
+async function claimAccountFreeUsage2(...args) {
+  const module2 = await Promise.resolve().then(() => (init_constance_account(), constance_account_exports));
+  return module2.claimAccountFreeUsage(...args);
+}
 var BASE_URL = "https://app.tutivsoft.com";
 var CAIRN_APP_ID = "cairn-vault-linter";
 var CAIRN_PRICE_IDS = {
@@ -504,7 +565,7 @@ var defaultRequester = async (request) => {
   return requestUrl2(request);
 };
 function showNotice(message) {
-  void import("obsidian").then(({ Notice: Notice4 }) => new Notice4(message));
+  void import("obsidian").then(({ Notice: Notice4 }) => new Notice4(message)).catch(() => void 0);
 }
 function localDateKey(date = /* @__PURE__ */ new Date()) {
   const pad = (value) => String(value).padStart(2, "0");
@@ -544,27 +605,30 @@ function eventId() {
   window.crypto.getRandomValues(bytes);
   return `evt_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
-async function fetchBalance(deviceId, requester = defaultRequester) {
+async function fetchBalance(host, requester = defaultRequester) {
   var _a, _b, _c;
+  const deviceId = ensureDeviceId(host);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) throw new Error("Billing account is not linked");
   const response = await requester({
-    url: `${BASE_URL}/api/v1/public/browser/entitlements`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId }),
+    url: `${BASE_URL}/api/v1/billing/entitlements/me?${new URLSearchParams({ app_id: CAIRN_APP_ID, installation_id: deviceId }).toString()}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false
   });
   if (response.status < 200 || response.status >= 300) throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
   return Math.max(0, Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance) || 0);
 }
-async function spendConstanceCredits(deviceId, amount, requester = defaultRequester, stableEventId = eventId()) {
+async function spendConstanceCredits(host, amount, requester = defaultRequester, stableEventId = eventId()) {
   var _a, _b, _c;
   if (!Number.isInteger(amount) || amount !== 1) return { kind: "error" };
+  const deviceId = ensureDeviceId(host);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return { kind: "error" };
   try {
     const response = await requester({
-      url: `${BASE_URL}/api/v1/public/browser/credits/spend`,
+      url: `${BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: stableEventId }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}` },
+      body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, amount, event_id: stableEventId }),
       throw: false
     });
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };
@@ -578,7 +642,8 @@ async function spendConstanceCredits(deviceId, amount, requester = defaultReques
 async function syncBalance(host, requester = defaultRequester) {
   const deviceId = ensureDeviceId(host);
   try {
-    host.settings.purchasedRepairBatches = await fetchBalance(deviceId, requester);
+    if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
+    host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
     await host.persistBillingSettings();
   } catch (error) {
     console.warn("Cairn: Constance balance sync failed", error);
@@ -596,7 +661,7 @@ async function retryPendingRepairCharges(host, requester = defaultRequester) {
   var _a;
   const pending = [...(_a = host.settings.pendingRepairCharges) != null ? _a : []];
   for (const stableEventId of pending) {
-    const result = await spendConstanceCredits(ensureDeviceId(host), 1, requester, stableEventId);
+    const result = await spendConstanceCredits(host, 1, requester, stableEventId);
     if (result.kind === "error") break;
     host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
     host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
@@ -612,7 +677,7 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     return null;
   }
   if (host.settings.freeRepairBatchesUsed < 3) {
-    const accountFree = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
+    const accountFree = await claimAccountFreeUsage2(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
     if (accountFree.kind !== "ok") {
       if (accountFree.kind === "auth-required") {
         host.settings.billingAccessToken = "";
@@ -645,7 +710,7 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     source: "purchased",
     commit: async () => {
       if (settled) return { kind: "committed" };
-      const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester, stableEventId);
+      const result = await spendConstanceCredits(host, 1, requester, stableEventId);
       if (result.kind === "error") return { kind: "pending" };
       settled = true;
       host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
@@ -693,6 +758,9 @@ function openCheckout(host, pack) {
   const params = new URLSearchParams({ app_id: CAIRN_APP_ID, price_id: priceId, email, external_customer_id: deviceId });
   window.open(`${BASE_URL}/buy?${params.toString()}`, "_blank");
 }
+
+// publish/src/main.ts
+init_constance_account();
 
 // publish/src/types.ts
 var DEFAULT_CHECKS = {
