@@ -1,4 +1,8 @@
-import { claimAccountFreeUsage } from "./constance-account";
+
+async function claimAccountFreeUsage(...args: Parameters<typeof import("./constance-account")["claimAccountFreeUsage"]>): ReturnType<typeof import("./constance-account")["claimAccountFreeUsage"]> {
+  const module = await import("./constance-account");
+  return module.claimAccountFreeUsage(...args);
+}
 
 const BASE_URL = "https://app.tutivsoft.com";
 export const CAIRN_APP_ID = "cairn-vault-linter";
@@ -41,9 +45,9 @@ export interface BillingHttpResponse {
 
 export interface BillingRequest {
   url: string;
-  method: "POST";
+  method: "GET" | "POST";
   headers: Record<string, string>;
-  body: string;
+  body?: string;
   throw: false;
 }
 
@@ -55,7 +59,7 @@ const defaultRequester: BillingRequester = async (request) => {
 };
 
 function showNotice(message: string): void {
-  void import("obsidian").then(({ Notice }) => new Notice(message));
+  void import("obsidian").then(({ Notice }) => new Notice(message)).catch(() => undefined);
 }
 
 export function localDateKey(date = new Date()): string {
@@ -105,12 +109,13 @@ function eventId(): string {
   return `evt_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export async function fetchBalance(deviceId: string, requester: BillingRequester = defaultRequester): Promise<number> {
+export async function fetchBalance(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<number> {
+  const deviceId = ensureDeviceId(host);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) throw new Error("Billing account is not linked");
   const response = await requester({
-    url: `${BASE_URL}/api/v1/public/browser/entitlements`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId }),
+    url: `${BASE_URL}/api/v1/billing/entitlements/me?${new URLSearchParams({ app_id: CAIRN_APP_ID, installation_id: deviceId }).toString()}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false,
   });
   if (response.status < 200 || response.status >= 300) throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
@@ -122,14 +127,16 @@ export type SpendResult =
   | { kind: "insufficient" }
   | { kind: "error" };
 
-export async function spendConstanceCredits(deviceId: string, amount: number, requester: BillingRequester = defaultRequester, stableEventId = eventId()): Promise<SpendResult> {
+export async function spendConstanceCredits(host: BillingHost, amount: number, requester: BillingRequester = defaultRequester, stableEventId = eventId()): Promise<SpendResult> {
   if (!Number.isInteger(amount) || amount !== 1) return { kind: "error" };
+  const deviceId = ensureDeviceId(host);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return { kind: "error" };
   try {
     const response = await requester({
-      url: `${BASE_URL}/api/v1/public/browser/credits/spend`,
+      url: `${BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, external_customer_id: deviceId, machine_id: deviceId, amount, event_id: stableEventId }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}` },
+      body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, amount, event_id: stableEventId }),
       throw: false,
     });
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };
@@ -144,7 +151,8 @@ export async function spendConstanceCredits(deviceId: string, amount: number, re
 export async function syncBalance(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
   const deviceId = ensureDeviceId(host);
   try {
-    host.settings.purchasedRepairBatches = await fetchBalance(deviceId, requester);
+    if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
+    host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
     await host.persistBillingSettings();
   } catch (error) {
     console.warn("Cairn: Constance balance sync failed", error);
@@ -170,7 +178,7 @@ export interface RepairReservation {
 export async function retryPendingRepairCharges(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
   const pending = [...(host.settings.pendingRepairCharges ?? [])];
   for (const stableEventId of pending) {
-    const result = await spendConstanceCredits(ensureDeviceId(host), 1, requester, stableEventId);
+    const result = await spendConstanceCredits(host, 1, requester, stableEventId);
     if (result.kind === "error") break;
     host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
     host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
@@ -219,7 +227,7 @@ export async function reserveRepairBatch(host: BillingHost, requester: BillingRe
     source: "purchased",
     commit: async () => {
       if (settled) return { kind: "committed" };
-      const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester, stableEventId);
+      const result = await spendConstanceCredits(host, 1, requester, stableEventId);
       if (result.kind === "error") return { kind: "pending" };
       settled = true;
       host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
