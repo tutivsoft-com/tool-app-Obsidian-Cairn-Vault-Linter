@@ -1,3 +1,5 @@
+import { claimAccountFreeUsage } from "./constance-account";
+
 const BASE_URL = "https://app.tutivsoft.com";
 export const CAIRN_APP_ID = "cairn-vault-linter";
 
@@ -13,9 +15,12 @@ export const CAIRN_PRICE_IDS: Record<CairnPackKey, string> = {
 export interface BillingSettings {
   constanceDeviceId: string;
   billingEmail: string;
+  billingAccessToken: string;
+  billingAccountLinked: boolean;
   freeRepairDay: string;
   freeRepairBatchesUsed: number;
   purchasedRepairBatches: number;
+  pendingRepairCharges: string[];
 }
 
 export interface BillingHost {
@@ -148,51 +153,100 @@ export async function syncBalance(host: BillingHost, requester: BillingRequester
 
 export async function initializeBilling(host: BillingHost): Promise<void> {
   ensureDeviceId(host);
+  host.settings.pendingRepairCharges = [...new Set((host.settings.pendingRepairCharges ?? []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  void syncBalance(host);
+  void syncBalance(host).then(() => retryPendingRepairCharges(host));
 }
+
+export type RepairCommitResult = { kind: "committed" } | { kind: "pending" } | { kind: "insufficient" };
 
 export interface RepairReservation {
   source: "free" | "purchased";
+  commit(): Promise<RepairCommitResult>;
   rollback(): Promise<void>;
+}
+
+export async function retryPendingRepairCharges(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
+  const pending = [...(host.settings.pendingRepairCharges ?? [])];
+  for (const stableEventId of pending) {
+    const result = await spendConstanceCredits(ensureDeviceId(host), 1, requester, stableEventId);
+    if (result.kind === "error") break;
+    host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+    host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
+    await host.persistBillingSettings();
+  }
 }
 
 /** Authorize one approved repair batch. Scans, previews, exports and rollback do not call this. */
 export async function reserveRepairBatch(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<RepairReservation | null> {
   ensureDeviceId(host);
   resetDailyFreeRepairs(host.settings);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+    showNotice("Cairn: sign in or create a billing account in plugin settings before applying repairs.");
+    return null;
+  }
 
   if (host.settings.freeRepairBatchesUsed < 3) {
-    const previous = host.settings.freeRepairBatchesUsed;
-    host.settings.freeRepairBatchesUsed += 1;
+    const accountFree = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
+    if (accountFree.kind !== "ok") {
+      if (accountFree.kind === "auth-required") { host.settings.billingAccessToken = ""; host.settings.billingAccountLinked = false; await host.persistBillingSettings(); }
+      showNotice(accountFree.kind === "insufficient" ? "Cairn: today's account free allowance is exhausted." : "Cairn: the account allowance could not be verified.");
+      return null;
+    }
+    host.settings.freeRepairBatchesUsed = Math.max(0, 3 - accountFree.remaining);
     await host.persistBillingSettings();
     return {
       source: "free",
-      rollback: async () => {
-        host.settings.freeRepairBatchesUsed = previous;
-        await host.persistBillingSettings();
-      },
+      commit: async () => ({ kind: "committed" }),
+      rollback: async () => undefined,
     };
   }
 
-  const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester);
-  if (result.kind === "ok") {
-    host.settings.purchasedRepairBatches = result.balance;
-    await host.persistBillingSettings();
-    return { source: "purchased", rollback: async () => undefined };
-  }
-  if (result.kind === "insufficient") {
+  if (host.settings.purchasedRepairBatches <= 0) await syncBalance(host, requester);
+  if (host.settings.purchasedRepairBatches <= 0) {
     host.settings.purchasedRepairBatches = 0;
     await host.persistBillingSettings();
     showNotice("Cairn: today's 3 free repair batches are used. Buy more repair credits in Cairn settings.");
     return null;
   }
-  showNotice("Cairn could not verify repair credits. No note changes were made.");
-  return null;
+
+  const stableEventId = eventId();
+  host.settings.pendingRepairCharges = [...(host.settings.pendingRepairCharges ?? []), stableEventId];
+  await host.persistBillingSettings();
+  let settled = false;
+  return {
+    source: "purchased",
+    commit: async () => {
+      if (settled) return { kind: "committed" };
+      const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester, stableEventId);
+      if (result.kind === "error") return { kind: "pending" };
+      settled = true;
+      host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+      if (result.kind === "insufficient") {
+        host.settings.purchasedRepairBatches = 0;
+        await host.persistBillingSettings();
+        return { kind: "insufficient" };
+      }
+      host.settings.purchasedRepairBatches = result.balance;
+      try {
+        await host.persistBillingSettings();
+      } catch {
+        host.settings.pendingRepairCharges = [...host.settings.pendingRepairCharges, stableEventId];
+        return { kind: "pending" };
+      }
+      return { kind: "committed" };
+    },
+    rollback: async () => {
+      if (settled) return;
+      host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+      await host.persistBillingSettings();
+    },
+  };
 }
 
 export function openCheckout(host: BillingHost, pack: CairnPackKey): void {
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create a billing account in Cairn settings before buying credits."); return; }
   const email = host.settings.billingEmail.trim();
   const priceId = CAIRN_PRICE_IDS[pack];
   const deviceId = ensureDeviceId(host);

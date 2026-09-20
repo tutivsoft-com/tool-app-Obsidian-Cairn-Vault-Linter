@@ -13,8 +13,10 @@ import {
 import { applyIgnoredFindings, findingCounts, scanVault, type VaultReader } from "./core";
 import { applyTextRepairs, canRollback } from "./repair";
 import { initializeBilling, hasWritableRepairPlans, openCheckout, reserveRepairBatch, syncBalance } from "./billing";
+import { addBillingAccountSettings } from "./constance-account";
 import type { CairnSettings, Finding, FindingType, RepairJournal, RepairProposal, ScanError, ScanProgress, ScanResult, Severity } from "./types";
 import { DEFAULT_CHECKS, DEFAULT_SETTINGS } from "./types";
+import { PluginSupport } from "./plugin-support";
 
 export const VIEW_TYPE_CAIRN = "cairn-vault-linter";
 
@@ -78,6 +80,7 @@ interface RepairPlan {
 }
 
 export default class CairnVaultLinterPlugin extends Plugin {
+  support!: PluginSupport;
   declare settings: CairnSettings;
   lastFindings: Finding[] = [];
   lastErrors: ScanError[] = [];
@@ -87,6 +90,8 @@ export default class CairnVaultLinterPlugin extends Plugin {
   private reader!: VaultReader;
 
   async onload(): Promise<void> {
+    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply only explicitly approved repairs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review findings before applying repairs."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+    this.support.start();
     this.settings = mergeSettings(await this.loadData());
     await initializeBilling(this);
     this.reader = this.createReader();
@@ -593,7 +598,7 @@ class CairnSettingTab extends PluginSettingTab {
       billingSummary.setText(`Today: ${used}/3 free repair batches used · Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
     };
     renderBillingSummary();
-    new Setting(containerEl).setName("Billing email").setDesc("Used for the secure TutivSoft checkout receipt.").addText((text) => text.setPlaceholder("you@example.com").setValue(this.plugin.settings.billingEmail).onChange(async (value) => { this.plugin.settings.billingEmail = value.trim(); await this.plugin.persistBillingSettings(); }));
+    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: "cairn-vault-linter", installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.persistBillingSettings(), syncBalance: () => syncBalance(this.plugin), refresh: () => this.display() });
     const buySetting = new Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
     buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => openCheckout(this.plugin, "usd_001")));
     buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => openCheckout(this.plugin, "usd_010")));
@@ -608,6 +613,6 @@ class CairnSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxCharacters = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxMeaningfulLines = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => { this.plugin.settings.reportFolder = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
+    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
   }
 }

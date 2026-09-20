@@ -37,7 +37,7 @@ __export(main_exports, {
   default: () => CairnVaultLinterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // publish/src/core.ts
 var EXTERNAL_TARGET = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
@@ -368,6 +368,128 @@ function canRollback(current, recordedAfter) {
   return current === recordedAfter;
 }
 
+// publish/src/constance-account.ts
+var import_obsidian = require("obsidian");
+var CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
+function errorDetail(response, fallback) {
+  var _a, _b;
+  return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
+}
+async function authenticate(mode, email, password, installationId) {
+  var _a;
+  const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
+  }
+  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+  if (!token) throw new Error("Constance did not return an account token.");
+  return token;
+}
+async function linkInstallation(adapter, token) {
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      app_id: adapter.appId,
+      installation_id: adapter.installationId,
+      legacy_external_customer_id: adapter.installationId,
+      platform: "obsidian",
+      app_version: adapter.appVersion || void 0
+    }),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Installation link failed (HTTP ${response.status})`));
+  }
+}
+async function signInBillingAccount(adapter, password, mode) {
+  const email = adapter.state.billingEmail.trim().toLowerCase();
+  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
+  if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
+  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
+  const token = await authenticate(mode, email, password, adapter.installationId);
+  await linkInstallation(adapter, token);
+  adapter.state.billingEmail = email;
+  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccountLinked = true;
+  await adapter.persist();
+  await adapter.syncBalance();
+}
+async function claimAccountFreeUsage(state, appId, installationId, eventId2, amount) {
+  var _a, _b;
+  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
+      throw: false
+    });
+    if (response.status === 402) return { kind: "insufficient" };
+    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300) return { kind: "error" };
+    return { kind: "ok", remaining: Math.max(0, Number((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.remaining) || 0) };
+  } catch (error) {
+    console.error("Constance account free-usage claim failed", error);
+    return { kind: "error" };
+  }
+}
+function addBillingAccountSettings(containerEl, adapter) {
+  let password = "";
+  new import_obsidian.Setting(containerEl).setName("Billing account email").setDesc("Used for sign-in, purchase restore, and checkout. Reinstalling no longer creates a new free allowance.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).onChange(async (value) => {
+    adapter.state.billingEmail = value.trim();
+    await adapter.persist();
+  }));
+  new import_obsidian.Setting(containerEl).setName("Billing account password").setDesc("Used only for this sign-in request. The password is never saved by the plugin.").addText((text) => {
+    text.inputEl.type = "password";
+    text.setPlaceholder("At least 8 characters").onChange((value) => {
+      password = value;
+    });
+  });
+  const status = adapter.state.billingAccountLinked ? "Signed in and linked" : "Not signed in";
+  new import_obsidian.Setting(containerEl).setName("Billing account").setDesc(`${status}. The saved bearer session can restore purchases; your password is not stored.`).addButton((button) => button.setButtonText("Sign in").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "login");
+      new import_obsidian.Notice("Billing account signed in and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing sign-in failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Create account").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "register");
+      new import_obsidian.Notice("Billing account created and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing account creation failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
+    var _a;
+    adapter.state.billingAccessToken = "";
+    adapter.state.billingAccountLinked = false;
+    await adapter.persist();
+    new import_obsidian.Notice("Billing account signed out on this installation.");
+    (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+  }));
+}
+
 // publish/src/billing.ts
 var BASE_URL = "https://app.tutivsoft.com";
 var CAIRN_APP_ID = "cairn-vault-linter";
@@ -378,11 +500,11 @@ var CAIRN_PRICE_IDS = {
   // $10 -> 1,000 repair batches
 };
 var defaultRequester = async (request) => {
-  const { requestUrl } = await import("obsidian");
-  return requestUrl(request);
+  const { requestUrl: requestUrl2 } = await import("obsidian");
+  return requestUrl2(request);
 };
 function showNotice(message) {
-  void import("obsidian").then(({ Notice: Notice2 }) => new Notice2(message));
+  void import("obsidian").then(({ Notice: Notice4 }) => new Notice4(message));
 }
 function localDateKey(date = /* @__PURE__ */ new Date()) {
   const pad = (value) => String(value).padStart(2, "0");
@@ -463,42 +585,96 @@ async function syncBalance(host, requester = defaultRequester) {
   }
 }
 async function initializeBilling(host) {
+  var _a;
   ensureDeviceId(host);
+  host.settings.pendingRepairCharges = [...new Set(((_a = host.settings.pendingRepairCharges) != null ? _a : []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  void syncBalance(host);
+  void syncBalance(host).then(() => retryPendingRepairCharges(host));
+}
+async function retryPendingRepairCharges(host, requester = defaultRequester) {
+  var _a;
+  const pending = [...(_a = host.settings.pendingRepairCharges) != null ? _a : []];
+  for (const stableEventId of pending) {
+    const result = await spendConstanceCredits(ensureDeviceId(host), 1, requester, stableEventId);
+    if (result.kind === "error") break;
+    host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+    host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
+    await host.persistBillingSettings();
+  }
 }
 async function reserveRepairBatch(host, requester = defaultRequester) {
+  var _a;
   ensureDeviceId(host);
   resetDailyFreeRepairs(host.settings);
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+    showNotice("Cairn: sign in or create a billing account in plugin settings before applying repairs.");
+    return null;
+  }
   if (host.settings.freeRepairBatchesUsed < 3) {
-    const previous = host.settings.freeRepairBatchesUsed;
-    host.settings.freeRepairBatchesUsed += 1;
+    const accountFree = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
+    if (accountFree.kind !== "ok") {
+      if (accountFree.kind === "auth-required") {
+        host.settings.billingAccessToken = "";
+        host.settings.billingAccountLinked = false;
+        await host.persistBillingSettings();
+      }
+      showNotice(accountFree.kind === "insufficient" ? "Cairn: today's account free allowance is exhausted." : "Cairn: the account allowance could not be verified.");
+      return null;
+    }
+    host.settings.freeRepairBatchesUsed = Math.max(0, 3 - accountFree.remaining);
     await host.persistBillingSettings();
     return {
       source: "free",
-      rollback: async () => {
-        host.settings.freeRepairBatchesUsed = previous;
-        await host.persistBillingSettings();
-      }
+      commit: async () => ({ kind: "committed" }),
+      rollback: async () => void 0
     };
   }
-  const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester);
-  if (result.kind === "ok") {
-    host.settings.purchasedRepairBatches = result.balance;
-    await host.persistBillingSettings();
-    return { source: "purchased", rollback: async () => void 0 };
-  }
-  if (result.kind === "insufficient") {
+  if (host.settings.purchasedRepairBatches <= 0) await syncBalance(host, requester);
+  if (host.settings.purchasedRepairBatches <= 0) {
     host.settings.purchasedRepairBatches = 0;
     await host.persistBillingSettings();
     showNotice("Cairn: today's 3 free repair batches are used. Buy more repair credits in Cairn settings.");
     return null;
   }
-  showNotice("Cairn could not verify repair credits. No note changes were made.");
-  return null;
+  const stableEventId = eventId();
+  host.settings.pendingRepairCharges = [...(_a = host.settings.pendingRepairCharges) != null ? _a : [], stableEventId];
+  await host.persistBillingSettings();
+  let settled = false;
+  return {
+    source: "purchased",
+    commit: async () => {
+      if (settled) return { kind: "committed" };
+      const result = await spendConstanceCredits(host.settings.constanceDeviceId, 1, requester, stableEventId);
+      if (result.kind === "error") return { kind: "pending" };
+      settled = true;
+      host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+      if (result.kind === "insufficient") {
+        host.settings.purchasedRepairBatches = 0;
+        await host.persistBillingSettings();
+        return { kind: "insufficient" };
+      }
+      host.settings.purchasedRepairBatches = result.balance;
+      try {
+        await host.persistBillingSettings();
+      } catch (e) {
+        host.settings.pendingRepairCharges = [...host.settings.pendingRepairCharges, stableEventId];
+        return { kind: "pending" };
+      }
+      return { kind: "committed" };
+    },
+    rollback: async () => {
+      if (settled) return;
+      host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
+      await host.persistBillingSettings();
+    }
+  };
 }
 function openCheckout(host, pack) {
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+    showNotice("Sign in or create a billing account in Cairn settings before buying credits.");
+    return;
+  }
   const email = host.settings.billingEmail.trim();
   const priceId = CAIRN_PRICE_IDS[pack];
   const deviceId = ensureDeviceId(host);
@@ -551,10 +727,119 @@ var DEFAULT_SETTINGS = {
   ignoredFindings: [],
   constanceDeviceId: "",
   billingEmail: "",
+  billingAccessToken: "",
+  billingAccountLinked: false,
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
   purchasedRepairBatches: 0,
   pendingRepairCharges: []
+};
+
+// publish/src/plugin-support.ts
+var import_obsidian2 = require("obsidian");
+function safeDetail(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+var DocumentationModal = class extends import_obsidian2.Modal {
+  constructor(app, docs) {
+    super(app);
+    __publicField(this, "docs", docs);
+  }
+  onOpen() {
+    this.titleEl.setText(`${this.docs.name} documentation`);
+    this.contentEl.createEl("p", { text: this.docs.summary });
+    const addSection = (title, items) => {
+      this.contentEl.createEl("h3", { text: title });
+      const list = this.contentEl.createEl("ol");
+      for (const item of items) list.createEl("li", { text: item });
+    };
+    addSection("Quick start", this.docs.quickStart);
+    addSection("Useful commands", this.docs.commands);
+    addSection("Troubleshooting", this.docs.troubleshooting);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var PluginSupport = class {
+  constructor(plugin, docs) {
+    __publicField(this, "plugin", plugin);
+    __publicField(this, "docs", docs);
+    __publicField(this, "entries", []);
+    __publicField(this, "maxEntries", 250);
+  }
+  start() {
+    this.info("plugin.loaded", `version=${this.plugin.manifest.version}`);
+    this.plugin.registerDomEvent(window, "error", (event) => {
+      this.error("runtime.error", event.error || event.message);
+    });
+    this.plugin.registerDomEvent(window, "unhandledrejection", (event) => {
+      this.error("runtime.unhandled_rejection", event.reason);
+    });
+    this.plugin.addCommand({
+      id: "open-documentation",
+      name: "Open documentation",
+      callback: () => new DocumentationModal(this.plugin.app, this.docs).open()
+    });
+    this.plugin.addCommand({
+      id: "copy-debug-log",
+      name: "Copy debug log",
+      callback: () => {
+        void this.copyDiagnostics();
+      }
+    });
+    this.plugin.addCommand({
+      id: "open-plugin-settings",
+      name: "Open plugin settings",
+      callback: () => {
+        const setting = this.plugin.app.setting;
+        setting == null ? void 0 : setting.open();
+        setting == null ? void 0 : setting.openTabById(this.plugin.manifest.id);
+      }
+    });
+  }
+  info(event, detail) {
+    this.record("info", event, detail);
+  }
+  warn(event, detail) {
+    this.record("warn", event, detail);
+  }
+  error(event, detail) {
+    this.record("error", event, detail);
+  }
+  record(level, event, detail) {
+    const entry = { at: (/* @__PURE__ */ new Date()).toISOString(), level, event };
+    if (detail !== void 0) entry.detail = safeDetail(detail).slice(0, 4e3);
+    this.entries.push(entry);
+    if (this.entries.length > this.maxEntries) this.entries.splice(0, this.entries.length - this.maxEntries);
+    const method = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    method.call(console, `[${this.docs.name}] ${event}`, detail != null ? detail : "");
+  }
+  async copyDiagnostics() {
+    const header = [
+      `Plugin: ${this.docs.name}`,
+      `Plugin ID: ${this.plugin.manifest.id}`,
+      `Version: ${this.plugin.manifest.version}`,
+      `Captured: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+      `User agent: ${navigator.userAgent}`,
+      ""
+    ];
+    try {
+      await navigator.clipboard.writeText(header.concat(this.entries.map(
+        (entry) => `${entry.at} [${entry.level.toUpperCase()}] ${entry.event}${entry.detail ? ` \u2014 ${entry.detail}` : ""}`
+      )).join("\n"));
+      new import_obsidian2.Notice(`${this.docs.name}: debug log copied. Secrets and note contents are not included.`);
+    } catch (error) {
+      this.error("diagnostics.copy_failed", error);
+      new import_obsidian2.Notice(`${this.docs.name}: could not copy the debug log.`);
+    }
+  }
 };
 
 // publish/src/main.ts
@@ -600,9 +885,10 @@ function diffPreview(before, after) {
     ...afterLines.slice(first, afterEnd).map((line) => `+ ${line}`)
   ].join("\n");
 }
-var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
+var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
+    __publicField(this, "support");
     __publicField(this, "lastFindings", []);
     __publicField(this, "lastErrors", []);
     __publicField(this, "lastScan", null);
@@ -611,6 +897,8 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
     __publicField(this, "reader");
   }
   async onload() {
+    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply only explicitly approved repairs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review findings before applying repairs."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+    this.support.start();
     this.settings = mergeSettings(await this.loadData());
     await initializeBilling(this);
     this.reader = this.createReader();
@@ -646,7 +934,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       getFiles,
       read: async (record) => {
         const file = this.app.vault.getAbstractFileByPath(record.path);
-        if (!(file instanceof import_obsidian.TFile)) throw new Error("File is no longer available");
+        if (!(file instanceof import_obsidian3.TFile)) throw new Error("File is no longer available");
         return this.app.vault.read(file);
       }
     };
@@ -679,7 +967,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
   }
   async runScan(scopePaths, incremental = false) {
     if (this.scanAbort) {
-      new import_obsidian.Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
+      new import_obsidian3.Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
       return;
     }
     await this.openDashboard();
@@ -689,7 +977,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
     try {
       const result = await scanVault(this.reader, this.settings, scopePaths, incremental, this.scanAbort.signal, (progress) => view == null ? void 0 : view.setProgress(progress), this.lastFindings);
       if (result.cancelled) {
-        new import_obsidian.Notice(`Cairn scan cancelled after ${result.filesScanned} file(s).`);
+        new import_obsidian3.Notice(`Cairn scan cancelled after ${result.filesScanned} file(s).`);
         return;
       }
       this.lastScan = result;
@@ -705,9 +993,9 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       this.settings.lastFileSignatures = result.signatures;
       await this.saveData(this.settings);
       await this.refreshDashboard();
-      new import_obsidian.Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
+      new import_obsidian3.Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
     } catch (error) {
-      new import_obsidian.Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
+      new import_obsidian3.Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.scanAbort = null;
       view == null ? void 0 : view.setProgress(null);
@@ -715,7 +1003,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
   }
   cancelScan() {
     if (!this.scanAbort) {
-      new import_obsidian.Notice("No Cairn scan is active.");
+      new import_obsidian3.Notice("No Cairn scan is active.");
       return;
     }
     this.scanAbort.abort();
@@ -736,7 +1024,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
   async reviewRepairs(findings) {
     const candidates = findings.filter((finding) => finding.repair && !finding.ignored);
     if (!candidates.length) {
-      new import_obsidian.Notice("There are no exact, reviewable repairs in the current results.");
+      new import_obsidian3.Notice("There are no exact, reviewable repairs in the current results.");
       return;
     }
     const grouped = /* @__PURE__ */ new Map();
@@ -744,21 +1032,21 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
     const plans = [];
     for (const [path, fileFindings] of grouped) {
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (!(file instanceof import_obsidian.TFile)) continue;
+      if (!(file instanceof import_obsidian3.TFile)) continue;
       const before = await this.app.vault.read(file);
       const proposals = fileFindings.map((finding) => finding.repair);
       const after = applyTextRepairs(before, proposals).after;
       if (after !== before) plans.push({ path, before, after, proposals });
     }
     if (!plans.length) {
-      new import_obsidian.Notice("Cairn found no note changes to apply. Nothing was charged.");
+      new import_obsidian3.Notice("Cairn found no note changes to apply. Nothing was charged.");
       return;
     }
     new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
   }
   async applyRepairPlans(plans) {
     if (this.repairApplying) {
-      new import_obsidian.Notice("Cairn is already applying a repair batch.");
+      new import_obsidian3.Notice("Cairn is already applying a repair batch.");
       return;
     }
     this.repairApplying = true;
@@ -767,7 +1055,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       const skipped = [];
       for (const plan of plans) {
         const file = this.app.vault.getAbstractFileByPath(plan.path);
-        if (!(file instanceof import_obsidian.TFile)) {
+        if (!(file instanceof import_obsidian3.TFile)) {
           skipped.push(plan.path);
           continue;
         }
@@ -779,7 +1067,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
         readyPlans.push(plan);
       }
       if (!hasWritableRepairPlans(readyPlans)) {
-        new import_obsidian.Notice(`Cairn repair skipped ${skipped.length} file(s); there were no note changes to apply. Nothing was charged.`);
+        new import_obsidian3.Notice(`Cairn repair skipped ${skipped.length} file(s); there were no note changes to apply. Nothing was charged.`);
         return;
       }
       const journal = { batchId: `cairn-${Date.now()}`, createdAt: (/* @__PURE__ */ new Date()).toISOString(), entries: readyPlans.map((plan) => ({ path: plan.path, before: plan.before, after: plan.after })) };
@@ -791,7 +1079,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       for (const plan of readyPlans) {
         try {
           const file = this.app.vault.getAbstractFileByPath(plan.path);
-          if (!(file instanceof import_obsidian.TFile)) {
+          if (!(file instanceof import_obsidian3.TFile)) {
             skipped.push(plan.path);
             continue;
           }
@@ -810,12 +1098,12 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
         await reservation.rollback();
       } else {
         const billingResult = await reservation.commit();
-        if (billingResult.kind === "pending") new import_obsidian.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
+        if (billingResult.kind === "pending") new import_obsidian3.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
       }
-      new import_obsidian.Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
+      new import_obsidian3.Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
       await this.refreshDashboard();
     } catch (error) {
-      new import_obsidian.Notice(`Cairn repair could not be applied: ${error instanceof Error ? error.message : String(error)}`);
+      new import_obsidian3.Notice(`Cairn repair could not be applied: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.repairApplying = false;
     }
@@ -833,7 +1121,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       const skipped = [];
       for (const entry of journal.entries) {
         const file = this.app.vault.getAbstractFileByPath(entry.path);
-        if (!(file instanceof import_obsidian.TFile)) {
+        if (!(file instanceof import_obsidian3.TFile)) {
           skipped.push(entry.path);
           continue;
         }
@@ -845,15 +1133,15 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
         await this.app.vault.modify(file, entry.before);
         rolledBack.push(entry.path);
       }
-      new import_obsidian.Notice(`Cairn rollback: ${rolledBack.length} restored, ${skipped.length} skipped to protect newer edits.`);
+      new import_obsidian3.Notice(`Cairn rollback: ${rolledBack.length} restored, ${skipped.length} skipped to protect newer edits.`);
       await this.refreshDashboard();
     } catch (error) {
-      new import_obsidian.Notice(`No recoverable Cairn repair batch was found: ${error instanceof Error ? error.message : String(error)}`);
+      new import_obsidian3.Notice(`No recoverable Cairn repair batch was found: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   async exportReport(format) {
     if (!this.lastScan) {
-      new import_obsidian.Notice("Run a scan before exporting a report.");
+      new import_obsidian3.Notice("Run a scan before exporting a report.");
       return;
     }
     const content = format === "markdown" ? this.markdownReport() : format === "csv" ? this.csvReport() : this.jsonReport();
@@ -863,7 +1151,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
       const extension = format === "markdown" ? "md" : format;
       const path = `${folder}/cairn-report-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.${extension}`;
       await this.app.vault.create(path, content);
-      new import_obsidian.Notice(`Cairn report exported to ${path}.`);
+      new import_obsidian3.Notice(`Cairn report exported to ${path}.`);
     }).open();
   }
   markdownReport() {
@@ -889,7 +1177,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian.Plugin {
     return JSON.stringify({ generatedAt: (/* @__PURE__ */ new Date()).toISOString(), summary: { filesScanned: ((_a = this.lastScan) == null ? void 0 : _a.filesScanned) || 0, ...findingCounts(this.lastFindings) }, findings: this.lastFindings, errors: this.lastErrors }, null, 2);
   }
 };
-var CairnView = class extends import_obsidian.ItemView {
+var CairnView = class extends import_obsidian3.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     __publicField(this, "plugin");
@@ -1039,7 +1327,7 @@ var CairnView = class extends import_obsidian.ItemView {
     return button;
   }
 };
-var IgnoreModal = class extends import_obsidian.Modal {
+var IgnoreModal = class extends import_obsidian3.Modal {
   constructor(app, finding, onSave) {
     super(app);
     __publicField(this, "finding", finding);
@@ -1051,12 +1339,12 @@ var IgnoreModal = class extends import_obsidian.Modal {
     contentEl.createEl("h2", { text: "Ignore finding" });
     contentEl.createEl("p", { text: `${this.finding.sourcePath}:${this.finding.line} \xB7 ${this.finding.explanation}` });
     let reason = "";
-    new import_obsidian.Setting(contentEl).setName("Reason").setDesc("Keep a short local explanation for future reviews.").addText((text) => {
+    new import_obsidian3.Setting(contentEl).setName("Reason").setDesc("Keep a short local explanation for future reviews.").addText((text) => {
       text.setPlaceholder("Intentional link, generated note, etc.");
       text.onChange((value) => reason = value);
     });
     let scope = "finding";
-    new import_obsidian.Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: "This source note", folder: "This source folder" }).setValue(scope).onChange((value) => scope = value));
+    new import_obsidian3.Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: "This source note", folder: "This source folder" }).setValue(scope).onChange((value) => scope = value));
     const actions = contentEl.createDiv({ cls: "cairn-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.onclick = () => this.close();
@@ -1067,7 +1355,7 @@ var IgnoreModal = class extends import_obsidian.Modal {
     };
   }
 };
-var RepairPreviewModal = class extends import_obsidian.Modal {
+var RepairPreviewModal = class extends import_obsidian3.Modal {
   constructor(app, plans, onApply) {
     super(app);
     __publicField(this, "plans", plans);
@@ -1094,7 +1382,7 @@ ${diffPreview(plan.before, plan.after)}`).join("\n\n").slice(0, 16e3) });
     };
   }
 };
-var ExportChoiceModal = class extends import_obsidian.Modal {
+var ExportChoiceModal = class extends import_obsidian3.Modal {
   constructor(app, onChoose) {
     super(app);
     __publicField(this, "onChoose", onChoose);
@@ -1113,7 +1401,7 @@ var ExportChoiceModal = class extends import_obsidian.Modal {
     });
   }
 };
-var ExportPreviewModal = class extends import_obsidian.Modal {
+var ExportPreviewModal = class extends import_obsidian3.Modal {
   constructor(app, format, report, onApply) {
     super(app);
     __publicField(this, "format", format);
@@ -1138,7 +1426,7 @@ var ExportPreviewModal = class extends import_obsidian.Modal {
     };
   }
 };
-var CairnSettingTab = class extends import_obsidian.PluginSettingTab {
+var CairnSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     __publicField(this, "plugin", plugin);
@@ -1148,7 +1436,7 @@ var CairnSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Cairn Vault Linter" });
     containerEl.createEl("p", { text: "All checks run locally. Resetting settings does not change vault notes." });
-    new import_obsidian.Setting(containerEl).setName("Billing").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("Billing").setHeading();
     containerEl.createEl("p", { text: "Scanning, previews, exports, ignores, rollback, and local inspection are always free. Applying one approved repair batch uses one credit only when a note actually changes. You get 3 free repair batches per local calendar day." });
     const billingSummary = containerEl.createEl("p");
     const renderBillingSummary = () => {
@@ -1156,14 +1444,11 @@ var CairnSettingTab = class extends import_obsidian.PluginSettingTab {
       billingSummary.setText(`Today: ${used}/3 free repair batches used \xB7 Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
     };
     renderBillingSummary();
-    new import_obsidian.Setting(containerEl).setName("Billing email").setDesc("Used for the secure TutivSoft checkout receipt.").addText((text) => text.setPlaceholder("you@example.com").setValue(this.plugin.settings.billingEmail).onChange(async (value) => {
-      this.plugin.settings.billingEmail = value.trim();
-      await this.plugin.persistBillingSettings();
-    }));
-    const buySetting = new import_obsidian.Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
+    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: "cairn-vault-linter", installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.persistBillingSettings(), syncBalance: () => syncBalance(this.plugin), refresh: () => this.display() });
+    const buySetting = new import_obsidian3.Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
     buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => openCheckout(this.plugin, "usd_001")));
     buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => openCheckout(this.plugin, "usd_010")));
-    new import_obsidian.Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for this install.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => {
+    new import_obsidian3.Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for this install.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => {
       button.setDisabled(true);
       button.setButtonText("Refreshing\u2026");
       await syncBalance(this.plugin);
@@ -1173,50 +1458,50 @@ var CairnSettingTab = class extends import_obsidian.PluginSettingTab {
     }));
     void syncBalance(this.plugin).then(renderBillingSummary);
     containerEl.createEl("h3", { text: "Checks" });
-    Object.keys(DEFAULT_CHECKS).forEach((type) => new import_obsidian.Setting(containerEl).setName(FINDING_LABELS[type]).addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => {
+    Object.keys(DEFAULT_CHECKS).forEach((type) => new import_obsidian3.Setting(containerEl).setName(FINDING_LABELS[type]).addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => {
       this.plugin.settings.checks[type] = value;
       await this.plugin.saveData(this.plugin.settings);
     })));
-    new import_obsidian.Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => {
       this.plugin.settings.ignoredFolders = value;
       await this.plugin.saveData(this.plugin.settings);
     }));
-    new import_obsidian.Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one pattern per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one pattern per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => {
       this.plugin.settings.ignoredPatterns = value;
       await this.plugin.saveData(this.plugin.settings);
     }));
-    new import_obsidian.Setting(containerEl).setName("Scan hidden files").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Scan hidden files").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => {
       this.plugin.settings.scanHiddenFiles = value;
       await this.plugin.saveData(this.plugin.settings);
     }));
-    new import_obsidian.Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => {
       this.plugin.settings.scanNonMarkdownFiles = value;
       await this.plugin.saveData(this.plugin.settings);
     }));
-    new import_obsidian.Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => {
       const number = Number(value);
       if (Number.isFinite(number) && number >= 0) {
         this.plugin.settings.emptyStubMaxCharacters = number;
         await this.plugin.saveData(this.plugin.settings);
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => {
       const number = Number(value);
       if (Number.isFinite(number) && number >= 0) {
         this.plugin.settings.emptyStubMaxMeaningfulLines = number;
         await this.plugin.saveData(this.plugin.settings);
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => {
       this.plugin.settings.reportFolder = value;
       await this.plugin.saveData(this.plugin.settings);
     }));
-    new import_obsidian.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
-      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges };
+    new import_obsidian3.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
+      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges };
       this.plugin.settings = { ...mergeSettings(null), ...billing };
       await this.plugin.saveData(this.plugin.settings);
       this.display();
-      new import_obsidian.Notice("Cairn settings reset.");
+      new import_obsidian3.Notice("Cairn settings reset.");
     }));
   }
 };
