@@ -1,6 +1,6 @@
 # Cairn Vault Linter
 
-Version: `3.4.10`
+Version: `3.4.11`
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
@@ -33,7 +33,7 @@ The command **Cairn: Scan changed notes (incremental)** uses file signatures fro
 
 Scans, previews, exports, ignores, rollback, and other read-only/local inspection are free. A repair credit authorizes one user-approved repair batch that actually writes one or more note changes; empty, stale, or no-op batches are not charged. Each install receives 3 free repair batches per local calendar day. After that, one-time packs are $1 for 100 credits or $10 for 1,000 credits.
 
-Cairn uses TutivSoft's unsigned browser-relay billing endpoints for checkout, balance sync, and event-id-based spend. The plugin stores a random per-install device ID and optional billing email, but no shared secret. If billing is unavailable or a balance cannot be confirmed, Cairn refuses the paid repair and leaves notes unchanged. Checkout uses the exact Cairn-provisioned price IDs and retains runtime guards against invalid catalog configuration.
+Cairn uses TutivSoft's account-linked billing endpoints for installation linking, authoritative balance sync, server-authoritative free usage, authenticated checkout, and event-id-based spend. The plugin stores a random per-install installation ID, billing session tokens, and billing email locally; it never stores a shared secret or password. Checkout sends the current catalog plan code (`one_time` for $1/100 or `standard` for $10/1,000) with a stable `Idempotency-Key`; Paddle price IDs remain only in the guarded legacy fallback. If billing is unavailable or a balance cannot be confirmed, Cairn refuses the paid repair and leaves notes unchanged.
 
 ## Checks
 
@@ -45,7 +45,7 @@ Ignored folders and simple `*` file patterns are vault-relative. Hidden files an
 
 Scanning reads vault files through the Obsidian API and stores only local plugin settings, file signatures, ignored-finding reasons, and the last summary. Exported reports contain the findings the user chose to export. Repair rollback data is stored locally in the plugin folder because it must retain the exact pre-repair text. Billing is the only network activity, and it sends billing metadata only as described above.
 
-See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and [`docs/PRIVACY.md`](docs/PRIVACY.md) for the threat model, billing data flow, and safe-repair boundaries.
+See [`docs/CONSTANCE_BILLING.md`](docs/CONSTANCE_BILLING.md), [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), and [`docs/PRIVACY.md`](docs/PRIVACY.md) for the current billing contract mapping, threat model, billing data flow, and safe-repair boundaries.
 
 ## Development
 

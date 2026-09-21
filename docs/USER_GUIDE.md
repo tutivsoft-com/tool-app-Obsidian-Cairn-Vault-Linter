@@ -12,8 +12,8 @@
 
 Scanning, previewing, exporting, ignoring, rolling back, and inspecting the vault are always free. Applying one approved batch of repairs that changes at least one note uses one repair credit. Cairn checks the notes again immediately before authorization, so stale, empty, and no-op batches are not charged.
 
-Each local calendar day includes 3 free repair batches. After those are used, Cairn spends one purchased credit through TutivSoft's unsigned browser relay. A $1 pack contains 100 credits and a $10 pack contains 1,000 credits. If the balance cannot be verified, Cairn does not write notes.
+Each local calendar day includes 3 free repair batches. After those are used, Cairn claims one server-authoritative free-use unit or spends one purchased credit through TutivSoft's account-linked billing API. A $1 pack contains 100 credits and a $10 pack contains 1,000 credits. If the balance cannot be verified, Cairn does not write notes.
 
-In Settings → Billing, enter an optional billing email, review today's free usage and the purchased balance, refresh the balance, or open checkout for the live Cairn prices. The device ID is randomly generated and stored locally for this install; it is not a password or shared secret. No note contents are sent for billing.
+In Settings → Billing, enter your billing email and sign in or create an account, review today's free usage and the purchased balance, refresh the balance, or open checkout for the live Cairn packs. The installation ID is randomly generated and stored locally for this install; it is not a password or hardware fingerprint. Cairn renews the billing session when possible, persists checkout/spend idempotency state, and polls checkout settlement after opening. No note contents are sent for billing.
 
 Settings let you disable individual rules, manage billing, ignore folders/patterns, include hidden or non-Markdown files, tune the empty-stub definition, and choose the report folder. Reset returns analysis settings to their conservative defaults while preserving the billing identity and balance settings.

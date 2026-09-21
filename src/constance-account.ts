@@ -5,6 +5,7 @@ export const CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
 export interface ConstanceAccountState {
   billingEmail: string;
   billingAccessToken: string;
+  billingRefreshToken: string;
   billingAccountLinked: boolean;
 }
 
@@ -39,7 +40,7 @@ async function authenticate(
   email: string,
   password: string,
   installationId: string,
-): Promise<string> {
+): Promise<{ accessToken: string; refreshToken: string }> {
   const body = mode === "register"
     ? { email, password, external_customer_id: installationId }
     : { email, password };
@@ -53,9 +54,32 @@ async function authenticate(
   if (response.status < 200 || response.status >= 300) {
     throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
   }
-  const token = String(response.json?.access_token || "");
-  if (!token) throw new Error("Constance did not return an account token.");
-  return token;
+  const accessToken = String(response.json?.access_token || "");
+  const refreshToken = String(response.json?.refresh_token || "");
+  if (!accessToken || !refreshToken) throw new Error("Constance did not return a complete billing session.");
+  return { accessToken, refreshToken };
+}
+
+export async function refreshBillingAccessToken(state: ConstanceAccountState): Promise<boolean> {
+  if (!state.billingRefreshToken) return false;
+  try {
+    const response = await requestUrl({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: state.billingRefreshToken }),
+      throw: false,
+    });
+    if (response.status < 200 || response.status >= 300) return false;
+    const accessToken = String(response.json?.access_token || "");
+    const refreshToken = String(response.json?.refresh_token || "");
+    if (!accessToken || !refreshToken) return false;
+    state.billingAccessToken = accessToken;
+    state.billingRefreshToken = refreshToken;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function linkInstallation(adapter: ConstanceAccountAdapter, token: string): Promise<void> {
@@ -86,10 +110,11 @@ export async function signInBillingAccount(
   if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
   if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
   if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
-  const token = await authenticate(mode, email, password, adapter.installationId);
-  await linkInstallation(adapter, token);
+  const session = await authenticate(mode, email, password, adapter.installationId);
+  await linkInstallation(adapter, session.accessToken);
   adapter.state.billingEmail = email;
-  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccessToken = session.accessToken;
+  adapter.state.billingRefreshToken = session.refreshToken;
   adapter.state.billingAccountLinked = true;
   await adapter.persist();
   await adapter.syncBalance();
@@ -99,15 +124,25 @@ export async function validateBillingSession(adapter: ConstanceAccountAdapter): 
   const token = adapter.state.billingAccessToken;
   if (!token || !adapter.state.billingAccountLinked || !adapter.installationId) return false;
   const query = new URLSearchParams({ app_id: adapter.appId, installation_id: adapter.installationId });
-  const response = await requestUrl({
+  let response = await requestUrl({
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     throw: false,
   });
+  if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(adapter.state)) {
+    await adapter.persist();
+    response = await requestUrl({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+      method: "GET",
+      headers: { Authorization: `Bearer ${adapter.state.billingAccessToken}` },
+      throw: false,
+    });
+  }
   if (response.status === 401 || response.status === 403 || response.status === 404) {
     adapter.state.billingAccountLinked = false;
     adapter.state.billingAccessToken = "";
+    adapter.state.billingRefreshToken = "";
     await adapter.persist();
     return false;
   }
@@ -123,13 +158,22 @@ export async function claimAccountFreeUsage(
 ): Promise<FreeUsageResult> {
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await requestUrl({
+    let response = await requestUrl({
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
       throw: false,
     });
+    if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(state)) {
+      response = await requestUrl({
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+        throw: false,
+      });
+    }
     if (response.status === 402) return { kind: "insufficient" };
     if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
@@ -150,13 +194,22 @@ export async function spendAccountCredits(
 ): Promise<AccountSpendResult> {
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await requestUrl({
+    let response = await requestUrl({
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
       throw: false,
     });
+    if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(state)) {
+      response = await requestUrl({
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+        throw: false,
+      });
+    }
     if (response.status === 402) return { kind: "insufficient" };
     if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
@@ -214,6 +267,7 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
     }))
     .addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
       adapter.state.billingAccessToken = "";
+      adapter.state.billingRefreshToken = "";
       adapter.state.billingAccountLinked = false;
       await adapter.persist();
       new Notice("Billing account signed out on this installation.");

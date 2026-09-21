@@ -39,6 +39,7 @@ __export(constance_account_exports, {
   CONSTANCE_ACCOUNT_BASE_URL: () => CONSTANCE_ACCOUNT_BASE_URL,
   addBillingAccountSettings: () => addBillingAccountSettings,
   claimAccountFreeUsage: () => claimAccountFreeUsage,
+  refreshBillingAccessToken: () => refreshBillingAccessToken,
   signInBillingAccount: () => signInBillingAccount,
   spendAccountCredits: () => spendAccountCredits,
   validateBillingSession: () => validateBillingSession
@@ -48,7 +49,7 @@ function errorDetail(response, fallback) {
   return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
 }
 async function authenticate(mode, email, password, installationId) {
-  var _a;
+  var _a, _b;
   const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
   const response = await (0, import_obsidian.requestUrl)({
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
@@ -60,9 +61,32 @@ async function authenticate(mode, email, password, installationId) {
   if (response.status < 200 || response.status >= 300) {
     throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
   }
-  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
-  if (!token) throw new Error("Constance did not return an account token.");
-  return token;
+  const accessToken = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+  const refreshToken = String(((_b = response.json) == null ? void 0 : _b.refresh_token) || "");
+  if (!accessToken || !refreshToken) throw new Error("Constance did not return a complete billing session.");
+  return { accessToken, refreshToken };
+}
+async function refreshBillingAccessToken(state) {
+  var _a, _b;
+  if (!state.billingRefreshToken) return false;
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: state.billingRefreshToken }),
+      throw: false
+    });
+    if (response.status < 200 || response.status >= 300) return false;
+    const accessToken = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+    const refreshToken = String(((_b = response.json) == null ? void 0 : _b.refresh_token) || "");
+    if (!accessToken || !refreshToken) return false;
+    state.billingAccessToken = accessToken;
+    state.billingRefreshToken = refreshToken;
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 async function linkInstallation(adapter, token) {
   const response = await (0, import_obsidian.requestUrl)({
@@ -87,10 +111,11 @@ async function signInBillingAccount(adapter, password, mode) {
   if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
   if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
   if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
-  const token = await authenticate(mode, email, password, adapter.installationId);
-  await linkInstallation(adapter, token);
+  const session = await authenticate(mode, email, password, adapter.installationId);
+  await linkInstallation(adapter, session.accessToken);
   adapter.state.billingEmail = email;
-  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccessToken = session.accessToken;
+  adapter.state.billingRefreshToken = session.refreshToken;
   adapter.state.billingAccountLinked = true;
   await adapter.persist();
   await adapter.syncBalance();
@@ -99,15 +124,25 @@ async function validateBillingSession(adapter) {
   const token = adapter.state.billingAccessToken;
   if (!token || !adapter.state.billingAccountLinked || !adapter.installationId) return false;
   const query = new URLSearchParams({ app_id: adapter.appId, installation_id: adapter.installationId });
-  const response = await (0, import_obsidian.requestUrl)({
+  let response = await (0, import_obsidian.requestUrl)({
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
     throw: false
   });
+  if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(adapter.state)) {
+    await adapter.persist();
+    response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+      method: "GET",
+      headers: { Authorization: `Bearer ${adapter.state.billingAccessToken}` },
+      throw: false
+    });
+  }
   if (response.status === 401 || response.status === 403 || response.status === 404) {
     adapter.state.billingAccountLinked = false;
     adapter.state.billingAccessToken = "";
+    adapter.state.billingRefreshToken = "";
     await adapter.persist();
     return false;
   }
@@ -117,13 +152,22 @@ async function claimAccountFreeUsage(state, appId, installationId, eventId2, amo
   var _a, _b;
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await (0, import_obsidian.requestUrl)({
+    let response = await (0, import_obsidian.requestUrl)({
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
       throw: false
     });
+    if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(state)) {
+      response = await (0, import_obsidian.requestUrl)({
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
+        throw: false
+      });
+    }
     if (response.status === 402) return { kind: "insufficient" };
     if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
@@ -137,13 +181,22 @@ async function spendAccountCredits(state, appId, installationId, eventId2, amoun
   var _a, _b, _c;
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await (0, import_obsidian.requestUrl)({
+    let response = await (0, import_obsidian.requestUrl)({
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
       throw: false
     });
+    if ((response.status === 401 || response.status === 403) && await refreshBillingAccessToken(state)) {
+      response = await (0, import_obsidian.requestUrl)({
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId2, amount }),
+        throw: false
+      });
+    }
     if (response.status === 402) return { kind: "insufficient" };
     if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
@@ -194,6 +247,7 @@ function addBillingAccountSettings(containerEl, adapter) {
   })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
     var _a;
     adapter.state.billingAccessToken = "";
+    adapter.state.billingRefreshToken = "";
     adapter.state.billingAccountLinked = false;
     await adapter.persist();
     new import_obsidian.Notice("Billing account signed out on this installation.");
@@ -554,6 +608,10 @@ async function claimAccountFreeUsage2(...args) {
 }
 var BASE_URL = "https://app.tutivsoft.com";
 var CAIRN_APP_ID = "cairn-vault-linter";
+var CAIRN_PLAN_CODES = {
+  usd_001: "one_time",
+  usd_010: "standard"
+};
 var CAIRN_PRICE_IDS = {
   usd_001: "pri_01m28hmgj33fkt4epnk2rvzgcw",
   // $1 -> 100 repair batches
@@ -566,6 +624,17 @@ var defaultRequester = async (request) => {
 };
 function showNotice(message) {
   void import("obsidian").then(({ Notice: Notice4 }) => new Notice4(message)).catch(() => void 0);
+}
+async function requestWithFreshAccessToken(host, requester, buildRequest) {
+  let response = await requester(buildRequest());
+  if ((response.status === 401 || response.status === 403) && host.settings.billingRefreshToken) {
+    const { refreshBillingAccessToken: refreshBillingAccessToken2 } = await Promise.resolve().then(() => (init_constance_account(), constance_account_exports));
+    if (await refreshBillingAccessToken2(host.settings)) {
+      await host.persistBillingSettings();
+      response = await requester(buildRequest());
+    }
+  }
+  return response;
 }
 function localDateKey(date = /* @__PURE__ */ new Date()) {
   const pad = (value) => String(value).padStart(2, "0");
@@ -609,12 +678,12 @@ async function fetchBalance(host, requester = defaultRequester) {
   var _a, _b, _c;
   const deviceId = ensureDeviceId(host);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) throw new Error("Billing account is not linked");
-  const response = await requester({
+  const response = await requestWithFreshAccessToken(host, requester, () => ({
     url: `${BASE_URL}/api/v1/billing/entitlements/me?${new URLSearchParams({ app_id: CAIRN_APP_ID, installation_id: deviceId }).toString()}`,
     method: "GET",
     headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false
-  });
+  }));
   if (response.status < 200 || response.status >= 300) throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
   return Math.max(0, Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance) || 0);
 }
@@ -624,13 +693,13 @@ async function spendConstanceCredits(host, amount, requester = defaultRequester,
   const deviceId = ensureDeviceId(host);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return { kind: "error" };
   try {
-    const response = await requester({
+    const response = await requestWithFreshAccessToken(host, requester, () => ({
       url: `${BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}` },
       body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, amount, event_id: stableEventId }),
       throw: false
-    });
+    }));
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
     return { kind: "ok", balance: Math.max(0, Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance) || 0) };
@@ -650,9 +719,10 @@ async function syncBalance(host, requester = defaultRequester) {
   }
 }
 async function initializeBilling(host) {
-  var _a;
+  var _a, _b;
   ensureDeviceId(host);
   host.settings.pendingRepairCharges = [...new Set(((_a = host.settings.pendingRepairCharges) != null ? _a : []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
+  host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries((_b = host.settings.pendingCheckoutKeys) != null ? _b : {}).filter(([pack, key]) => (pack === "usd_001" || pack === "usd_010") && typeof key === "string" && key.startsWith("checkout_")));
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
   void syncBalance(host).then(() => retryPendingRepairCharges(host));
@@ -681,6 +751,7 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     if (accountFree.kind !== "ok") {
       if (accountFree.kind === "auth-required") {
         host.settings.billingAccessToken = "";
+        host.settings.billingRefreshToken = "";
         host.settings.billingAccountLinked = false;
         await host.persistBillingSettings();
       }
@@ -735,28 +806,85 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     }
   };
 }
-function openCheckout(host, pack) {
+async function pollCheckout(host, checkoutId, requester = defaultRequester) {
+  var _a;
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return "error";
+  const response = await requestWithFreshAccessToken(host, requester, () => ({
+    url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
+    throw: false
+  }));
+  if (response.status < 200 || response.status >= 300) return "error";
+  const data = (_a = response.json) == null ? void 0 : _a.data;
+  const status = String((data == null ? void 0 : data.status) || "").toLowerCase();
+  if ((data == null ? void 0 : data.settled) === true || ["paid", "completed", "success", "succeeded"].includes(status)) {
+    await syncBalance(host, requester);
+    return "settled";
+  }
+  return "pending";
+}
+async function openCheckout(host, pack, requester = defaultRequester) {
+  var _a, _b, _c, _d, _e, _f, _g, _h;
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
     showNotice("Sign in or create a billing account in Cairn settings before buying credits.");
     return;
   }
   const email = host.settings.billingEmail.trim();
+  const planCode = CAIRN_PLAN_CODES[pack];
   const priceId = CAIRN_PRICE_IDS[pack];
   const deviceId = ensureDeviceId(host);
   if (!email || !email.includes("@")) {
     showNotice("Enter a valid billing email in Cairn settings first.");
     return;
   }
-  if (!deviceId) {
-    showNotice("Cairn could not create a billing device ID. Try reopening Obsidian.");
+  if (!deviceId || !planCode) {
+    showNotice("Cairn billing has an invalid pack configuration. No checkout was opened.");
     return;
   }
-  if (!/^pri_[a-z0-9]+$/i.test(priceId)) {
-    showNotice("Cairn billing has an invalid price configuration. No checkout was opened.");
+  const pendingCheckoutKeys = (_a = host.settings.pendingCheckoutKeys) != null ? _a : {};
+  const idempotencyKey = pendingCheckoutKeys[pack] || `checkout_${eventId()}`;
+  host.settings.pendingCheckoutKeys = { ...pendingCheckoutKeys, [pack]: idempotencyKey };
+  await host.persistBillingSettings();
+  let response;
+  try {
+    response = await requestWithFreshAccessToken(host, requester, () => ({
+      url: `${BASE_URL}/api/v1/billing/checkout`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}`, "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ app_id: CAIRN_APP_ID, plan_code: planCode, installation_id: deviceId, quantity: 1, coupon_code: null }),
+      throw: false
+    }));
+  } catch (error) {
+    console.warn("Cairn: authenticated checkout request failed", error);
+    showNotice("Cairn checkout could not be reached. Try again; the same checkout request will be reused safely.");
     return;
   }
-  const params = new URLSearchParams({ app_id: CAIRN_APP_ID, price_id: priceId, email, external_customer_id: deviceId });
-  window.open(`${BASE_URL}/buy?${params.toString()}`, "_blank");
+  const checkoutUrl = (_c = (_b = response.json) == null ? void 0 : _b.data) == null ? void 0 : _c.checkout_url;
+  if (response.status >= 200 && response.status < 300 && typeof checkoutUrl === "string" && checkoutUrl) {
+    window.open(checkoutUrl, "_blank");
+    const checkoutId = (_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.checkout_id;
+    if (checkoutId !== void 0 && checkoutId !== null) (_f = host.pollAfterCheckout) == null ? void 0 : _f.call(host, String(checkoutId));
+    const nextKeys = { ...(_g = host.settings.pendingCheckoutKeys) != null ? _g : {} };
+    delete nextKeys[pack];
+    host.settings.pendingCheckoutKeys = nextKeys;
+    await host.persistBillingSettings();
+    return;
+  }
+  if (response.status === 404 || response.status === 405) {
+    if (!/^pri_[a-z0-9]+$/i.test(priceId)) {
+      showNotice("Cairn billing has no valid legacy fallback price configuration.");
+      return;
+    }
+    const params = new URLSearchParams({ app_id: CAIRN_APP_ID, price_id: priceId, email, external_customer_id: deviceId });
+    window.open(`${BASE_URL}/buy?${params.toString()}`, "_blank");
+    const nextKeys = { ...(_h = host.settings.pendingCheckoutKeys) != null ? _h : {} };
+    delete nextKeys[pack];
+    host.settings.pendingCheckoutKeys = nextKeys;
+    await host.persistBillingSettings();
+    return;
+  }
+  showNotice("Cairn checkout could not be created. Try again; no new checkout was opened.");
 }
 
 // publish/src/main.ts
@@ -796,11 +924,13 @@ var DEFAULT_SETTINGS = {
   constanceDeviceId: "",
   billingEmail: "",
   billingAccessToken: "",
+  billingRefreshToken: "",
   billingAccountLinked: false,
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
   purchasedRepairBatches: 0,
-  pendingRepairCharges: []
+  pendingRepairCharges: [],
+  pendingCheckoutKeys: {}
 };
 
 // publish/src/plugin-support.ts
@@ -987,14 +1117,17 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
   async persistBillingSettings() {
     await this.saveData(this.settings);
   }
-  pollAfterCheckout() {
+  pollAfterCheckout(checkoutId) {
     let attempts = 0;
-    const intervalId = window.setInterval(() => {
+    const poll = () => {
       attempts += 1;
-      void syncBalance(this);
-      if (attempts >= 8) window.clearInterval(intervalId);
-    }, 15e3);
+      void pollCheckout(this, checkoutId).then((status) => {
+        if (status !== "pending" || attempts >= 8) window.clearInterval(intervalId);
+      });
+    };
+    const intervalId = window.setInterval(poll, 15e3);
     this.registerInterval(intervalId);
+    poll();
   }
   createReader() {
     const getFiles = () => this.app.vault.getFiles().map((file) => ({ path: file.path, basename: file.basename, extension: file.extension, mtime: file.stat.mtime, size: file.stat.size }));
@@ -1514,8 +1647,8 @@ var CairnSettingTab = class extends import_obsidian3.PluginSettingTab {
     renderBillingSummary();
     addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: "cairn-vault-linter", installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.persistBillingSettings(), syncBalance: () => syncBalance(this.plugin), refresh: () => this.display() });
     const buySetting = new import_obsidian3.Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
-    buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => openCheckout(this.plugin, "usd_001")));
-    buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => openCheckout(this.plugin, "usd_010")));
+    buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => void openCheckout(this.plugin, "usd_001")));
+    buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => void openCheckout(this.plugin, "usd_010")));
     new import_obsidian3.Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for this install.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => {
       button.setDisabled(true);
       button.setButtonText("Refreshing\u2026");
@@ -1565,7 +1698,7 @@ var CairnSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.plugin.saveData(this.plugin.settings);
     }));
     new import_obsidian3.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
-      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges };
+      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingRefreshToken: this.plugin.settings.billingRefreshToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges, pendingCheckoutKeys: this.plugin.settings.pendingCheckoutKeys };
       this.plugin.settings = { ...mergeSettings(null), ...billing };
       await this.plugin.saveData(this.plugin.settings);
       this.display();

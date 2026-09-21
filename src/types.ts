@@ -37,11 +37,13 @@ export interface CairnSettings {
   constanceDeviceId: string;
   billingEmail: string;
   billingAccessToken: string;
+  billingRefreshToken: string;
   billingAccountLinked: boolean;
   freeRepairDay: string;
   freeRepairBatchesUsed: number;
   purchasedRepairBatches: number;
   pendingRepairCharges: string[];
+  pendingCheckoutKeys: Record<string, string>;
 }
 
 export interface IgnoredFinding {
@@ -152,9 +154,11 @@ export const DEFAULT_SETTINGS: CairnSettings = {
   constanceDeviceId: "",
   billingEmail: "",
   billingAccessToken: "",
+  billingRefreshToken: "",
   billingAccountLinked: false,
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
   purchasedRepairBatches: 0,
-  pendingRepairCharges: []
+  pendingRepairCharges: [],
+  pendingCheckoutKeys: {}
 };

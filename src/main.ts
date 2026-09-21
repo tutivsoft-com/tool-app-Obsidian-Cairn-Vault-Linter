@@ -12,7 +12,7 @@ import {
 } from "obsidian";
 import { applyIgnoredFindings, findingCounts, scanVault, type VaultReader } from "./core";
 import { applyTextRepairs, canRollback } from "./repair";
-import { initializeBilling, hasWritableRepairPlans, openCheckout, reserveRepairBatch, syncBalance } from "./billing";
+import { initializeBilling, hasWritableRepairPlans, openCheckout, pollCheckout, reserveRepairBatch, syncBalance } from "./billing";
 import { addBillingAccountSettings } from "./constance-account";
 import type { CairnSettings, Finding, FindingType, RepairJournal, RepairProposal, ScanError, ScanProgress, ScanResult, Severity } from "./types";
 import { DEFAULT_CHECKS, DEFAULT_SETTINGS } from "./types";
@@ -114,14 +114,17 @@ export default class CairnVaultLinterPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  pollAfterCheckout(): void {
+  pollAfterCheckout(checkoutId: string): void {
     let attempts = 0;
-    const intervalId = window.setInterval(() => {
+    const poll = () => {
       attempts += 1;
-      void syncBalance(this);
-      if (attempts >= 8) window.clearInterval(intervalId);
-    }, 15000);
+      void pollCheckout(this, checkoutId).then((status) => {
+        if (status !== "pending" || attempts >= 8) window.clearInterval(intervalId);
+      });
+    };
+    const intervalId = window.setInterval(poll, 15000);
     this.registerInterval(intervalId);
+    poll();
   }
 
   private createReader(): VaultReader {
@@ -600,8 +603,8 @@ class CairnSettingTab extends PluginSettingTab {
     renderBillingSummary();
     addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: "cairn-vault-linter", installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.persistBillingSettings(), syncBalance: () => syncBalance(this.plugin), refresh: () => this.display() });
     const buySetting = new Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
-    buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => openCheckout(this.plugin, "usd_001")));
-    buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => openCheckout(this.plugin, "usd_010")));
+    buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => void openCheckout(this.plugin, "usd_001")));
+    buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => void openCheckout(this.plugin, "usd_010")));
     new Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for this install.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => { button.setDisabled(true); button.setButtonText("Refreshing…"); await syncBalance(this.plugin); renderBillingSummary(); button.setDisabled(false); button.setButtonText("Refresh balance"); }));
     void syncBalance(this.plugin).then(renderBillingSummary);
     containerEl.createEl("h3", { text: "Checks" });
@@ -613,6 +616,6 @@ class CairnSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxCharacters = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxMeaningfulLines = number; await this.plugin.saveData(this.plugin.settings); } }));
     new Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => { this.plugin.settings.reportFolder = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
+    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingRefreshToken: this.plugin.settings.billingRefreshToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges, pendingCheckoutKeys: this.plugin.settings.pendingCheckoutKeys }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
   }
 }

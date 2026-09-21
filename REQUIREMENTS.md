@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: implemented — 3.4.6 billing release
+Status: implemented — 3.4.11 billing compatibility release
 
 ## Product promise
 
@@ -70,9 +70,9 @@ The user must be able to enable or disable each check and configure the definiti
 34. Keep scans, previews, exports, ignores, rollback, and read-only/local inspection free.
 35. Treat one credit as authorization for one user-approved repair batch that actually writes note changes.
 36. Grant 3 free repair batches per local calendar day, then use one-time $1/100 and $10/1,000 credit packs.
-37. Use a random, persistent per-install device ID and optional billing email; never embed a shared secret in the plugin.
-38. Sync the purchased balance through the unsigned browser-relay entitlement endpoint and include a fresh event ID for every spend.
-39. Guard checkout against invalid email, missing device identity, and unprovisioned/wrong price IDs.
+37. Use a random, persistent per-install installation ID, account session, and billing email; never embed a shared secret or password in the plugin.
+38. Link the installation, sync authoritative entitlements/free usage, and include a stable event ID for every spend attempt.
+39. Use authenticated checkout with a server-owned plan code and persisted idempotency key; retain guarded price IDs only for legacy fallback.
 40. Authorize at the safe write boundary after a fresh no-op/stale-plan check; never charge an empty or no-op repair batch.
 41. Refuse a paid repair when spend verification fails or balance is confirmed insufficient; do not fail open into note writes.
 
@@ -106,4 +106,4 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - Malformed or unreadable files are reported rather than stopping the scan.
 - The complete MVP works offline with no AI account and no paid credits.
 - The free daily repair allowance works locally; paid repair writes require confirmed credit authorization.
-- Checkout uses exact Cairn-provisioned price IDs, remains guarded against catalog misconfiguration, and no no-op repair consumes a credit.
+- Checkout uses the live Cairn plan codes (`one_time` and `standard`), persists idempotency state, polls settlement, and no no-op repair consumes a credit.

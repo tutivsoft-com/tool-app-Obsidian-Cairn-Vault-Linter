@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.4.11 - 2026-09-22
+
+- Migrated checkout to authenticated Constance plan-code transactions with
+  persisted idempotency keys, rotating session refresh, and settlement polling.
+- Retained the Contract v9 `/buy` path only as a guarded compatibility fallback
+  and synchronized the billing/privacy documentation.
+
 ## 3.4.10 - 2026-09-21
 
 - Incremented release metadata without rebuilding the plugin.
