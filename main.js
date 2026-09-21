@@ -719,13 +719,39 @@ async function syncBalance(host, requester = defaultRequester) {
   }
 }
 async function initializeBilling(host) {
-  var _a, _b;
+  var _a, _b, _c;
   ensureDeviceId(host);
-  host.settings.pendingRepairCharges = [...new Set(((_a = host.settings.pendingRepairCharges) != null ? _a : []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
-  host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries((_b = host.settings.pendingCheckoutKeys) != null ? _b : {}).filter(([pack, key]) => (pack === "usd_001" || pack === "usd_010") && typeof key === "string" && key.startsWith("checkout_")));
+  host.settings.pendingFreeUsageClaims = [...new Set(((_a = host.settings.pendingFreeUsageClaims) != null ? _a : []).filter((id) => typeof id === "string" && id.startsWith("free_")))];
+  host.settings.pendingRepairCharges = [...new Set(((_b = host.settings.pendingRepairCharges) != null ? _b : []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
+  host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries((_c = host.settings.pendingCheckoutKeys) != null ? _c : {}).filter(([pack, key]) => (pack === "usd_001" || pack === "usd_010") && typeof key === "string" && key.startsWith("checkout_")));
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  void syncBalance(host).then(() => retryPendingRepairCharges(host));
+  void syncBalance(host).then(async () => {
+    await retryPendingFreeUsageClaims(host);
+    await retryPendingRepairCharges(host);
+  });
+}
+async function retryPendingFreeUsageClaims(host) {
+  var _a;
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
+  const pending = [...(_a = host.settings.pendingFreeUsageClaims) != null ? _a : []];
+  for (const stableEventId of pending) {
+    const result = await claimAccountFreeUsage2(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, stableEventId, 1);
+    if (result.kind === "error") break;
+    host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableEventId);
+    if (result.kind === "auth-required") {
+      host.settings.billingAccessToken = "";
+      host.settings.billingRefreshToken = "";
+      host.settings.billingAccountLinked = false;
+      await host.persistBillingSettings();
+      break;
+    }
+    if (result.kind === "ok") {
+      resetDailyFreeRepairs(host.settings);
+      host.settings.freeRepairBatchesUsed = Math.max(0, 3 - result.remaining);
+    }
+    await host.persistBillingSettings();
+  }
 }
 async function retryPendingRepairCharges(host, requester = defaultRequester) {
   var _a;
@@ -739,7 +765,7 @@ async function retryPendingRepairCharges(host, requester = defaultRequester) {
   }
 }
 async function reserveRepairBatch(host, requester = defaultRequester) {
-  var _a;
+  var _a, _b, _c;
   ensureDeviceId(host);
   resetDailyFreeRepairs(host.settings);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
@@ -747,17 +773,31 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     return null;
   }
   if (host.settings.freeRepairBatchesUsed < 3) {
-    const accountFree = await claimAccountFreeUsage2(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
+    await retryPendingFreeUsageClaims(host);
+    if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+      showNotice("Cairn: sign in or create a billing account before applying repairs.");
+      return null;
+    }
+    if (((_a = host.settings.pendingFreeUsageClaims) != null ? _a : []).length) {
+      showNotice("Cairn: the account allowance could not be verified.");
+      return null;
+    }
+    const stableFreeEventId = `free_${eventId()}`;
+    host.settings.pendingFreeUsageClaims = [...(_b = host.settings.pendingFreeUsageClaims) != null ? _b : [], stableFreeEventId];
+    await host.persistBillingSettings();
+    const accountFree = await claimAccountFreeUsage2(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, stableFreeEventId, 1);
     if (accountFree.kind !== "ok") {
+      if (accountFree.kind !== "error") host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableFreeEventId);
       if (accountFree.kind === "auth-required") {
         host.settings.billingAccessToken = "";
         host.settings.billingRefreshToken = "";
         host.settings.billingAccountLinked = false;
         await host.persistBillingSettings();
-      }
+      } else if (accountFree.kind !== "error") await host.persistBillingSettings();
       showNotice(accountFree.kind === "insufficient" ? "Cairn: today's account free allowance is exhausted." : "Cairn: the account allowance could not be verified.");
       return null;
     }
+    host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableFreeEventId);
     host.settings.freeRepairBatchesUsed = Math.max(0, 3 - accountFree.remaining);
     await host.persistBillingSettings();
     return {
@@ -774,7 +814,7 @@ async function reserveRepairBatch(host, requester = defaultRequester) {
     return null;
   }
   const stableEventId = eventId();
-  host.settings.pendingRepairCharges = [...(_a = host.settings.pendingRepairCharges) != null ? _a : [], stableEventId];
+  host.settings.pendingRepairCharges = [...(_c = host.settings.pendingRepairCharges) != null ? _c : [], stableEventId];
   await host.persistBillingSettings();
   let settled = false;
   return {
@@ -929,6 +969,7 @@ var DEFAULT_SETTINGS = {
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
   purchasedRepairBatches: 0,
+  pendingFreeUsageClaims: [],
   pendingRepairCharges: [],
   pendingCheckoutKeys: {}
 };
@@ -1698,7 +1739,7 @@ var CairnSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.plugin.saveData(this.plugin.settings);
     }));
     new import_obsidian3.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
-      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingRefreshToken: this.plugin.settings.billingRefreshToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingRepairCharges: this.plugin.settings.pendingRepairCharges, pendingCheckoutKeys: this.plugin.settings.pendingCheckoutKeys };
+      const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingRefreshToken: this.plugin.settings.billingRefreshToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingFreeUsageClaims: this.plugin.settings.pendingFreeUsageClaims, pendingRepairCharges: this.plugin.settings.pendingRepairCharges, pendingCheckoutKeys: this.plugin.settings.pendingCheckoutKeys };
       this.plugin.settings = { ...mergeSettings(null), ...billing };
       await this.plugin.saveData(this.plugin.settings);
       this.display();

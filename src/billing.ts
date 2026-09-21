@@ -30,6 +30,7 @@ export interface BillingSettings {
   freeRepairDay: string;
   freeRepairBatchesUsed: number;
   purchasedRepairBatches: number;
+  pendingFreeUsageClaims: string[];
   pendingRepairCharges: string[];
   pendingCheckoutKeys: Record<string, string>;
 }
@@ -190,11 +191,15 @@ export async function syncBalance(host: BillingHost, requester: BillingRequester
 
 export async function initializeBilling(host: BillingHost): Promise<void> {
   ensureDeviceId(host);
+  host.settings.pendingFreeUsageClaims = [...new Set((host.settings.pendingFreeUsageClaims ?? []).filter((id) => typeof id === "string" && id.startsWith("free_")))];
   host.settings.pendingRepairCharges = [...new Set((host.settings.pendingRepairCharges ?? []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
   host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries(host.settings.pendingCheckoutKeys ?? {}).filter(([pack, key]) => (pack === "usd_001" || pack === "usd_010") && typeof key === "string" && key.startsWith("checkout_")));
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  void syncBalance(host).then(() => retryPendingRepairCharges(host));
+  void syncBalance(host).then(async () => {
+    await retryPendingFreeUsageClaims(host);
+    await retryPendingRepairCharges(host);
+  });
 }
 
 export type RepairCommitResult = { kind: "committed" } | { kind: "pending" } | { kind: "insufficient" };
@@ -203,6 +208,28 @@ export interface RepairReservation {
   source: "free" | "purchased";
   commit(): Promise<RepairCommitResult>;
   rollback(): Promise<void>;
+}
+
+export async function retryPendingFreeUsageClaims(host: BillingHost): Promise<void> {
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
+  const pending = [...(host.settings.pendingFreeUsageClaims ?? [])];
+  for (const stableEventId of pending) {
+    const result = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, stableEventId, 1);
+    if (result.kind === "error") break;
+    host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableEventId);
+    if (result.kind === "auth-required") {
+      host.settings.billingAccessToken = "";
+      host.settings.billingRefreshToken = "";
+      host.settings.billingAccountLinked = false;
+      await host.persistBillingSettings();
+      break;
+    }
+    if (result.kind === "ok") {
+      resetDailyFreeRepairs(host.settings);
+      host.settings.freeRepairBatchesUsed = Math.max(0, 3 - result.remaining);
+    }
+    await host.persistBillingSettings();
+  }
 }
 
 export async function retryPendingRepairCharges(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
@@ -226,12 +253,27 @@ export async function reserveRepairBatch(host: BillingHost, requester: BillingRe
   }
 
   if (host.settings.freeRepairBatchesUsed < 3) {
-    const accountFree = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, `free_${eventId()}`, 1);
+    await retryPendingFreeUsageClaims(host);
+    if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+      showNotice("Cairn: sign in or create a billing account before applying repairs.");
+      return null;
+    }
+    if ((host.settings.pendingFreeUsageClaims ?? []).length) {
+      showNotice("Cairn: the account allowance could not be verified.");
+      return null;
+    }
+    const stableFreeEventId = `free_${eventId()}`;
+    host.settings.pendingFreeUsageClaims = [...(host.settings.pendingFreeUsageClaims ?? []), stableFreeEventId];
+    await host.persistBillingSettings();
+    const accountFree = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, stableFreeEventId, 1);
     if (accountFree.kind !== "ok") {
+      if (accountFree.kind !== "error") host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableFreeEventId);
       if (accountFree.kind === "auth-required") { host.settings.billingAccessToken = ""; host.settings.billingRefreshToken = ""; host.settings.billingAccountLinked = false; await host.persistBillingSettings(); }
+      else if (accountFree.kind !== "error") await host.persistBillingSettings();
       showNotice(accountFree.kind === "insufficient" ? "Cairn: today's account free allowance is exhausted." : "Cairn: the account allowance could not be verified.");
       return null;
     }
+    host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableFreeEventId);
     host.settings.freeRepairBatchesUsed = Math.max(0, 3 - accountFree.remaining);
     await host.persistBillingSettings();
     return {

@@ -14,7 +14,8 @@ server-to-server callback pattern.
 - `GET /api/v1/billing/entitlements/me` is the authoritative balance and
   entitlement poll. Expired access tokens are renewed through `/auth/refresh`.
 - `POST /api/v1/billing/free-usage/claim` consumes the server-authoritative
-  daily free allowance with a stable event ID.
+  daily free allowance with a persisted stable event ID; an unknown claim is
+  retried before a new claim is created.
 - `POST /api/v1/billing/credits/spend` spends one paid repair credit with a
   persisted stable event ID. Unknown responses are retried with that same ID;
   Cairn never invents a replacement event ID.
@@ -40,6 +41,6 @@ server-to-server callback pattern.
   authenticated checkout. Current transaction errors do not fall back, which
   prevents duplicate purchases and preserves idempotency.
 
-The plugin persists billing session state, pending spend IDs, and pending
-checkout idempotency keys in Obsidian plugin settings. Passwords and shared
-secrets are never stored.
+The plugin persists billing session state, pending free-usage/spend IDs, and
+pending checkout idempotency keys in Obsidian plugin settings. Passwords and
+shared secrets are never stored.

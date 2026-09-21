@@ -42,6 +42,7 @@ export interface CairnSettings {
   freeRepairDay: string;
   freeRepairBatchesUsed: number;
   purchasedRepairBatches: number;
+  pendingFreeUsageClaims: string[];
   pendingRepairCharges: string[];
   pendingCheckoutKeys: Record<string, string>;
 }
@@ -159,6 +160,7 @@ export const DEFAULT_SETTINGS: CairnSettings = {
   freeRepairDay: "",
   freeRepairBatchesUsed: 0,
   purchasedRepairBatches: 0,
+  pendingFreeUsageClaims: [],
   pendingRepairCharges: [],
   pendingCheckoutKeys: {}
 };
