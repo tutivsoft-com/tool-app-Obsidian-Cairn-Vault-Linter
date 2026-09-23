@@ -1,6 +1,6 @@
 # Cairn Vault Linter
 
-Version: `3.4.11`
+Version: `3.4.14`
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
@@ -56,6 +56,15 @@ npm run build
 ```
 
 Tests cover deterministic path/heading parsing, link resolution, duplicate detection, empty-stub rules, ignored findings, CSV escaping, journal-safe repair behavior, daily free allowances, device IDs, spend payloads, and the no-op billing guard. The release artifact is built from the mirrored TypeScript under `publish/src/`.
+
+## Product documentation
+
+- [Features](FEATURES.md)
+- [Product requirements](REQUIREMENTS.md)
+- [Software architecture](SOFTWARE_ARCHITECTURE.md)
+- [Marketing brief](MARKETING.md)
+- [User guide](docs/USER_GUIDE.md)
+- [Privacy](docs/PRIVACY.md) and [threat model](docs/THREAT_MODEL.md)
 
 ## License
 

@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: implemented — 3.4.12 repair safety release
+Status: runtime scope implemented through 3.4.13; 3.4.14 is documentation-only.
 
 ## Product promise
 

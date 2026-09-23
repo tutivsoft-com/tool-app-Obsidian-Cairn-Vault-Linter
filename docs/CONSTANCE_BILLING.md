@@ -1,6 +1,6 @@
 # Cairn Constance billing integration
 
-Status: current account-linked integration, release 3.4.12.
+Status: current account-linked integration, release 3.4.14.
 
 Cairn is a backend-less Obsidian plugin. It therefore uses the current
 authenticated client flow at `https://app.tutivsoft.com`, not the signed
@@ -40,6 +40,8 @@ server-to-server callback pattern.
 - The legacy `/buy` URL is used only when an older central returns 404/405 for
   authenticated checkout. Current transaction errors do not fall back, which
   prevents duplicate purchases and preserves idempotency.
+
+Constance has no free-usage claim refund endpoint. Cairn validates the repair plan and prepares the rollback journal before claiming, but a later vault write failure can still consume a free use.
 
 The plugin persists billing session state, pending free-usage/spend IDs, and
 pending checkout idempotency keys in Obsidian plugin settings. Passwords and

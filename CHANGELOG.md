@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.14 - 2026-09-24
+
+- Added current features, architecture, marketing, and requirements documentation.
+- No runtime behavior changed.
+
 ## 3.4.13 - 2026-09-23
 
 - Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.
