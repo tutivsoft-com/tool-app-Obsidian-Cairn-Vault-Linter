@@ -1,5 +1,7 @@
 # Cairn Vault Linter
 
+Version: `3.4.11`
+
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
 The product promise is simple: every result is concrete and reviewable, and no note is changed unless the user explicitly approves a previewed repair. Scanning and inspection stay local. Billing only authorizes an approved repair batch; Cairn never uploads note contents.
@@ -25,7 +27,7 @@ Open **Cairn Vault Linter** from the ribbon or command palette. The dashboard pr
 - Local Markdown, CSV, and JSON exports with a preview before creating a report note.
 - Exact duplicate-link repairs with before/after preview, a recovery journal, independent file writes, and rollback.
 
-The command **Cairn: Scan changed notes (incremental)** uses file signatures from the last scan and retains previous results for notes that did not change. Run a full scan after large renames or structural changes for a fresh vault-wide index.
+The command **Cairn Vault Linter: Scan changed notes (incremental)** uses file signatures from the last scan and retains previous results for notes that did not change. Run a full scan after large renames or structural changes for a fresh vault-wide index.
 
 ## Billing
 

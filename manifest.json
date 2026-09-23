@@ -1,7 +1,7 @@
 {
   "id": "cairn-vault-linter",
   "name": "Cairn Vault Linter",
-  "version": "3.4.12",
+  "version": "3.4.13",
   "minAppVersion": "1.5.0",
   "description": "Offline vault health report for broken links, duplicate references, block IDs, and dangling stubs.",
   "author": "Rahul",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.4.13 - 2026-09-23
+
+- Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.
+
 ## 3.4.12 - 2026-09-23
 
 - Prepare and verify the rollback journal before claiming a free repair allowance.

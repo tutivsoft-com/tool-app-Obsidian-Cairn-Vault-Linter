@@ -98,12 +98,12 @@ export default class CairnVaultLinterPlugin extends Plugin {
     this.reader = this.createReader();
     this.registerView(VIEW_TYPE_CAIRN, (leaf) => new CairnView(leaf, this));
     this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => void this.openDashboard());
-    this.addCommand({ id: "scan-full-vault", name: "Cairn: Scan full vault", callback: () => void this.runScan() });
-    this.addCommand({ id: "scan-current-note", name: "Cairn: Scan current note", checkCallback: (checking) => this.scanCurrentNote(checking) });
-    this.addCommand({ id: "scan-current-folder", name: "Cairn: Scan current folder", checkCallback: (checking) => this.scanCurrentFolder(checking) });
-    this.addCommand({ id: "scan-changed-notes", name: "Cairn: Scan changed notes (incremental)", callback: () => void this.runScan(undefined, true) });
-    this.addCommand({ id: "cancel-scan", name: "Cairn: Cancel active scan", callback: () => this.cancelScan() });
-    this.addCommand({ id: "rollback-last-repair", name: "Cairn: Roll back last repair batch", callback: () => void this.rollbackLastRepair() });
+    this.addCommand({ id: "scan-full-vault", name: "Scan full vault", callback: () => void this.runScan() });
+    this.addCommand({ id: "scan-current-note", name: "Scan current note", checkCallback: (checking) => this.scanCurrentNote(checking) });
+    this.addCommand({ id: "scan-current-folder", name: "Scan current folder", checkCallback: (checking) => this.scanCurrentFolder(checking) });
+    this.addCommand({ id: "scan-changed-notes", name: "Scan changed notes (incremental)", callback: () => void this.runScan(undefined, true) });
+    this.addCommand({ id: "cancel-scan", name: "Cancel active scan", callback: () => this.cancelScan() });
+    this.addCommand({ id: "rollback-last-repair", name: "Roll back last repair batch", callback: () => void this.rollbackLastRepair() });
     this.addSettingTab(new CairnSettingTab(this.app, this));
   }
 
