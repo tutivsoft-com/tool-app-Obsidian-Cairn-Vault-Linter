@@ -12,7 +12,7 @@
 
 Scanning, previewing, exporting, ignoring, rolling back, and inspecting the vault are always free. Applying one approved batch of repairs that changes at least one note uses one repair credit. Cairn checks the notes and prepares a verified rollback journal before authorization, so stale, empty, and unwritable batches do not claim the free allowance.
 
-Each local calendar day includes 3 free repair batches. After those are used, Cairn claims one server-authoritative free-use unit or spends one purchased credit through TutivSoft's account-linked billing API. A $1 pack contains 100 credits and a $10 pack contains 1,000 credits. If the balance cannot be verified, Cairn does not write notes.
+Each local calendar day includes 3 free repair batches, claimed from TutivSoft's account-linked billing API. After those are used, Cairn spends one purchased credit per batch. A $1 pack contains 100 credits and a $10 pack contains 1,000 credits. If the allowance or balance cannot be verified, Cairn does not write notes. A write failure after a successful free claim can still consume that free use because the billing API has no refund operation.
 
 In Settings → Billing, enter your billing email and sign in or create an account, review today's free usage and the purchased balance, refresh the balance, or open checkout for the live Cairn packs. The installation ID is randomly generated and stored locally for this install; it is not a password or hardware fingerprint. Cairn renews the billing session when possible, persists checkout/spend idempotency state, and polls checkout settlement after opening. No note contents are sent for billing.
 

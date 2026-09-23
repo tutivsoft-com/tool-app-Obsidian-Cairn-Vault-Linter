@@ -29,7 +29,7 @@ The command **Cairn: Scan changed notes (incremental)** uses file signatures fro
 
 ## Billing
 
-Scans, previews, exports, ignores, rollback, and other read-only/local inspection are free. A repair credit authorizes one user-approved repair batch that actually writes one or more note changes; empty, stale, or no-op batches are not charged. Each install receives 3 free repair batches per local calendar day. After that, one-time packs are $1 for 100 credits or $10 for 1,000 credits.
+Scans, previews, exports, ignores, rollback, and other read-only/local inspection are free. A repair credit authorizes one user-approved repair batch; empty, stale, or no-op batches are rejected before a claim. Each billing account receives 3 free repair batches per local calendar day. After that, one-time packs are $1 for 100 credits or $10 for 1,000 credits. A write failure after a successful free claim can still consume that free use because Constance has no refund operation.
 
 Cairn uses TutivSoft's account-linked billing endpoints for installation linking, authoritative balance sync, server-authoritative free usage, authenticated checkout, and event-id-based spend. The plugin stores a random per-install installation ID, billing session tokens, and billing email locally; it never stores a shared secret or password. Checkout sends the current catalog plan code (`one_time` for $1/100 or `standard` for $10/1,000) with a stable `Idempotency-Key`; Paddle price IDs remain only in the guarded legacy fallback. If billing is unavailable or a balance cannot be confirmed, Cairn refuses the paid repair and leaves notes unchanged.
 
