@@ -1,6 +1,6 @@
 # Cairn Vault Linter — Product Requirements
 
-Status: implemented — 3.4.11 billing compatibility release
+Status: implemented — 3.4.12 repair safety release
 
 ## Product promise
 

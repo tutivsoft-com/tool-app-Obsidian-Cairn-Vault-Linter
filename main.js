@@ -601,6 +601,25 @@ function canRollback(current, recordedAfter) {
   return current === recordedAfter;
 }
 
+// publish/src/journal.ts
+async function prepareRepairJournal(adapter, path, content) {
+  const existed = await adapter.exists(path);
+  const previous = existed ? await adapter.read(path) : null;
+  if (previous !== null) await adapter.write(`${path}.previous`, previous);
+  const restore = async () => {
+    if (previous !== null) await adapter.write(path, previous);
+    else if (await adapter.exists(path)) await adapter.remove(path);
+  };
+  try {
+    await adapter.write(path, content);
+    if (await adapter.read(path) !== content) throw new Error("Repair journal verification failed");
+  } catch (error) {
+    await restore();
+    throw error;
+  }
+  return restore;
+}
+
 // publish/src/billing.ts
 async function claimAccountFreeUsage2(...args) {
   const module2 = await Promise.resolve().then(() => (init_constance_account(), constance_account_exports));
@@ -1313,9 +1332,18 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
         return;
       }
       const journal = { batchId: `cairn-${Date.now()}`, createdAt: (/* @__PURE__ */ new Date()).toISOString(), entries: readyPlans.map((plan) => ({ path: plan.path, before: plan.before, after: plan.after })) };
-      await this.writeJournal(journal);
-      const reservation = await reserveRepairBatch(this);
-      if (!reservation) return;
+      const restoreJournal = await prepareRepairJournal(this.app.vault.adapter, this.journalPath(), JSON.stringify(journal));
+      let reservation;
+      try {
+        reservation = await reserveRepairBatch(this);
+      } catch (error) {
+        await restoreJournal();
+        throw error;
+      }
+      if (!reservation) {
+        await restoreJournal();
+        return;
+      }
       const changed = [];
       const failed = [];
       for (const plan of readyPlans) {
@@ -1338,6 +1366,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
       }
       if (!changed.length) {
         await reservation.rollback();
+        await restoreJournal();
       } else {
         const billingResult = await reservation.commit();
         if (billingResult.kind === "pending") new import_obsidian3.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
@@ -1352,9 +1381,6 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
   }
   journalPath() {
     return `${this.manifest.dir || `.obsidian/plugins/${this.manifest.id}`}/repair-journal.json`;
-  }
-  async writeJournal(journal) {
-    await this.app.vault.adapter.write(this.journalPath(), JSON.stringify(journal));
   }
   async rollbackLastRepair() {
     try {

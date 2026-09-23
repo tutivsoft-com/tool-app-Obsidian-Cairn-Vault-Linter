@@ -1,6 +1,6 @@
 # Cairn Constance billing integration
 
-Status: current account-linked integration, release 3.4.11.
+Status: current account-linked integration, release 3.4.12.
 
 Cairn is a backend-less Obsidian plugin. It therefore uses the current
 authenticated client flow at `https://app.tutivsoft.com`, not the signed

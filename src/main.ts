@@ -12,6 +12,7 @@ import {
 } from "obsidian";
 import { applyIgnoredFindings, findingCounts, scanVault, type VaultReader } from "./core";
 import { applyTextRepairs, canRollback } from "./repair";
+import { prepareRepairJournal } from "./journal";
 import { initializeBilling, hasWritableRepairPlans, openCheckout, pollCheckout, reserveRepairBatch, syncBalance } from "./billing";
 import { addBillingAccountSettings } from "./constance-account";
 import type { CairnSettings, Finding, FindingType, RepairJournal, RepairProposal, ScanError, ScanProgress, ScanResult, Severity } from "./types";
@@ -276,9 +277,18 @@ export default class CairnVaultLinterPlugin extends Plugin {
       }
 
       const journal: RepairJournal = { batchId: `cairn-${Date.now()}`, createdAt: new Date().toISOString(), entries: readyPlans.map((plan) => ({ path: plan.path, before: plan.before, after: plan.after })) };
-      await this.writeJournal(journal);
-      const reservation = await reserveRepairBatch(this);
-      if (!reservation) return;
+      const restoreJournal = await prepareRepairJournal(this.app.vault.adapter, this.journalPath(), JSON.stringify(journal));
+      let reservation;
+      try {
+        reservation = await reserveRepairBatch(this);
+      } catch (error) {
+        await restoreJournal();
+        throw error;
+      }
+      if (!reservation) {
+        await restoreJournal();
+        return;
+      }
 
       const changed: string[] = [];
       const failed: string[] = [];
@@ -296,6 +306,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       }
       if (!changed.length) {
         await reservation.rollback();
+        await restoreJournal();
       } else {
         const billingResult = await reservation.commit();
         if (billingResult.kind === "pending") new Notice("Cairn repair applied. Billing is pending and will retry automatically.");
@@ -311,10 +322,6 @@ export default class CairnVaultLinterPlugin extends Plugin {
 
   private journalPath(): string {
     return `${this.manifest.dir || `.obsidian/plugins/${this.manifest.id}`}/repair-journal.json`;
-  }
-
-  private async writeJournal(journal: RepairJournal): Promise<void> {
-    await this.app.vault.adapter.write(this.journalPath(), JSON.stringify(journal));
   }
 
   async rollbackLastRepair(): Promise<void> {

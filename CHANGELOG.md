@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.12 - 2026-09-23
+
+- Prepare and verify the rollback journal before claiming a free repair allowance.
+- Preserve the previous rollback journal when repair billing cannot be reserved or no files change.
+
 ## 3.4.11 - 2026-09-22
 
 - Migrated checkout to authenticated Constance plan-code transactions with

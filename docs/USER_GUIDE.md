@@ -10,7 +10,7 @@
 
 ## Billing and repair credits
 
-Scanning, previewing, exporting, ignoring, rolling back, and inspecting the vault are always free. Applying one approved batch of repairs that changes at least one note uses one repair credit. Cairn checks the notes again immediately before authorization, so stale, empty, and no-op batches are not charged.
+Scanning, previewing, exporting, ignoring, rolling back, and inspecting the vault are always free. Applying one approved batch of repairs that changes at least one note uses one repair credit. Cairn checks the notes and prepares a verified rollback journal before authorization, so stale, empty, and unwritable batches do not claim the free allowance.
 
 Each local calendar day includes 3 free repair batches. After those are used, Cairn claims one server-authoritative free-use unit or spends one purchased credit through TutivSoft's account-linked billing API. A $1 pack contains 100 credits and a $10 pack contains 1,000 credits. If the balance cannot be verified, Cairn does not write notes.
 
