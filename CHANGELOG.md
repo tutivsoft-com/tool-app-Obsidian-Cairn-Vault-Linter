@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.4.21 (2026-09-25)
+
+- Synchronized the release version across release metadata and current product documentation; plugin behavior is unchanged.
+
 ## 3.4.19 (2026-09-24)
 
 - Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
