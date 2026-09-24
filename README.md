@@ -1,10 +1,10 @@
 # Cairn Vault Linter
 
-Version: `3.4.14`
+Version: `3.4.17`
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
-The product promise is simple: every result is concrete and reviewable, and no note is changed unless the user explicitly approves a previewed repair. Scanning and inspection stay local. Billing only authorizes an approved repair batch; Cairn never uploads note contents.
+Scans and repairs run locally. Repairs apply directly by default, with a **Review repairs before applying** setting for users who want a before/after approval window. Billing only authorizes a repair batch; Cairn never uploads note contents.
 
 ## Install and build
 
@@ -18,14 +18,16 @@ Copy `publish/main.js`, `publish/manifest.json`, and `publish/styles.css` into `
 
 ## Use
 
-Open **Cairn Vault Linter** from the ribbon or command palette. The dashboard provides:
+Open **Cairn Vault Linter** from the ribbon or command palette. Right-click a note in its editor or File Explorer to scan that note, or right-click a folder/multi-selection to scan its Markdown notes. Current-note and current-folder scans are also available from the command palette. The dashboard provides:
 
 - Full-vault, current-note, current-folder, and changed-notes scans.
 - Live progress with files scanned, findings, and an accessible Cancel button.
 - Finding cards grouped by source note, with severity, line, section, target, context, and explanation.
 - Filters for finding type, severity, folder, and ignored/unresolved state.
-- Local Markdown, CSV, and JSON exports with a preview before creating a report note.
-- Exact duplicate-link repairs with before/after preview, a recovery journal, independent file writes, and rollback.
+- Local Markdown, CSV, and JSON exports in the configured default format; optional preview before creating a report note.
+- Exact duplicate-link repairs with a recovery journal, independent file writes, optional before/after review, and rollback.
+
+The default **Apply safe repairs** action applies exact supported repairs in one run. Enable **Review repairs before applying** in settings to see before/after changes first. Set the default report format in settings so exporting does not ask for a format each time.
 
 The command **Cairn Vault Linter: Scan changed notes (incremental)** uses file signatures from the last scan and retains previous results for notes that did not change. Run a full scan after large renames or structural changes for a fresh vault-wide index.
 

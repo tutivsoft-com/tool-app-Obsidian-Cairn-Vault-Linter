@@ -990,7 +990,9 @@ var DEFAULT_SETTINGS = {
   purchasedRepairBatches: 0,
   pendingFreeUsageClaims: [],
   pendingRepairCharges: [],
-  pendingCheckoutKeys: {}
+  pendingCheckoutKeys: {},
+  reviewBeforeApply: false,
+  defaultReportFormat: "markdown"
 };
 
 // publish/src/plugin-support.ts
@@ -1121,6 +1123,7 @@ function mergeSettings(data) {
     ...DEFAULT_SETTINGS,
     ...data,
     checks: { ...DEFAULT_CHECKS, ...(data == null ? void 0 : data.checks) || {} },
+    defaultReportFormat: (data == null ? void 0 : data.defaultReportFormat) === "csv" || (data == null ? void 0 : data.defaultReportFormat) === "json" ? data.defaultReportFormat : "markdown",
     lastFileSignatures: (data == null ? void 0 : data.lastFileSignatures) || {},
     ignoredFindings: (data == null ? void 0 : data.ignoredFindings) || [],
     pendingRepairCharges: (data == null ? void 0 : data.pendingRepairCharges) || []
@@ -1155,7 +1158,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
     __publicField(this, "reader");
   }
   async onload() {
-    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply only explicitly approved repairs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review findings before applying repairs."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply safe repairs directly or with optional review.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Apply safe repairs or enable review in settings."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
     this.support.start();
     this.settings = mergeSettings(await this.loadData());
     await initializeBilling(this);
@@ -1168,6 +1171,11 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
     this.addCommand({ id: "scan-changed-notes", name: "Scan changed notes (incremental)", callback: () => void this.runScan(void 0, true) });
     this.addCommand({ id: "cancel-scan", name: "Cancel active scan", callback: () => this.cancelScan() });
     this.addCommand({ id: "rollback-last-repair", name: "Roll back last repair batch", callback: () => void this.rollbackLastRepair() });
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenuItems(menu, file)));
+    this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => this.addFilesMenuItems(menu, files)));
+    this.registerEvent(this.app.workspace.on("editor-menu", (menu, _editor, info) => {
+      if (info.file instanceof import_obsidian3.TFile) this.addScanMenuItem(menu, [info.file.path], "Cairn: Scan this note");
+    }));
     this.addSettingTab(new CairnSettingTab(this.app, this));
   }
   onunload() {
@@ -1225,6 +1233,30 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
     if (checking) return !!folder;
     if (folder) void this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path));
     return true;
+  }
+  addScanMenuItem(menu, paths, title) {
+    if (!paths.length) return;
+    menu.addItem((item) => item.setTitle(title).onClick(() => void this.runScan(paths)));
+  }
+  addFileMenuItems(menu, file) {
+    if (file instanceof import_obsidian3.TFile && file.extension.toLowerCase() === "md") {
+      this.addScanMenuItem(menu, [file.path], "Cairn: Scan this note");
+      return;
+    }
+    if (file instanceof import_obsidian3.TFolder && file.path) {
+      const paths = this.app.vault.getMarkdownFiles().filter((note) => note.path.startsWith(`${file.path}/`)).map((note) => note.path);
+      this.addScanMenuItem(menu, paths, "Cairn: Scan this folder");
+    }
+  }
+  addFilesMenuItems(menu, selected) {
+    const paths = /* @__PURE__ */ new Set();
+    for (const entry of selected) {
+      if (entry instanceof import_obsidian3.TFile && entry.extension.toLowerCase() === "md") paths.add(entry.path);
+      else if (entry instanceof import_obsidian3.TFolder) {
+        for (const file of this.app.vault.getMarkdownFiles()) if (file.path.startsWith(`${entry.path}/`)) paths.add(file.path);
+      }
+    }
+    this.addScanMenuItem(menu, [...paths], `Cairn: Scan ${paths.size} selected note${paths.size === 1 ? "" : "s"}`);
   }
   async runScan(scopePaths, incremental = false) {
     if (this.scanAbort) {
@@ -1303,7 +1335,8 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Cairn found no note changes to apply. Nothing was charged.");
       return;
     }
-    new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
+    if (this.settings.reviewBeforeApply) new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
+    else void this.applyRepairPlans(plans);
   }
   async applyRepairPlans(plans) {
     if (this.repairApplying) {
@@ -1413,14 +1446,16 @@ var CairnVaultLinterPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     const content = format === "markdown" ? this.markdownReport() : format === "csv" ? this.csvReport() : this.jsonReport();
-    new ExportPreviewModal(this.app, format, content, async () => {
+    const createReport = async () => {
       const folder = this.settings.reportFolder.trim().replace(/^\/+|\/+$/g, "") || "Cairn Reports";
       if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
       const extension = format === "markdown" ? "md" : format;
       const path = `${folder}/cairn-report-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.${extension}`;
       await this.app.vault.create(path, content);
       new import_obsidian3.Notice(`Cairn report exported to ${path}.`);
-    }).open();
+    };
+    if (this.settings.reviewBeforeApply) new ExportPreviewModal(this.app, format, content, createReport).open();
+    else void createReport();
   }
   markdownReport() {
     var _a;
@@ -1534,9 +1569,9 @@ var CairnView = class extends import_obsidian3.ItemView {
       this.stateFilter = value;
       this.render();
     });
-    const exportButton = this.button(toolbar, "Export\u2026", () => new ExportChoiceModal(this.app, (format) => void this.plugin.exportReport(format)).open());
+    const exportButton = this.button(toolbar, "Export report", () => void this.plugin.exportReport(this.plugin.settings.defaultReportFormat));
     exportButton.setAttr("aria-label", "Export the current Cairn report");
-    this.button(toolbar, "Review safe repairs", () => void this.plugin.reviewRepairs(this.filteredFindings()));
+    this.button(toolbar, this.plugin.settings.reviewBeforeApply ? "Review safe repairs" : "Apply safe repairs", () => void this.plugin.reviewRepairs(this.filteredFindings()));
     const findings = this.filteredFindings();
     root.createEl("p", { text: `${findings.length} finding(s) shown${this.plugin.lastErrors.length ? ` \xB7 ${this.plugin.lastErrors.length} unreadable file(s)` : ""}` }).addClass("cairn-filter-summary");
     const groups = /* @__PURE__ */ new Map();
@@ -1568,7 +1603,7 @@ var CairnView = class extends import_obsidian3.ItemView {
     meta.appendText(` \xB7 ${finding.section} \xB7 ${finding.ignored ? `Ignored: ${finding.ignoredReason}` : finding.resolved ? "Resolved target" : "Unresolved"}`);
     if (finding.context) card.createEl("pre", { text: finding.context }).addClass("cairn-context");
     const buttons = card.createDiv({ cls: "cairn-finding-actions" });
-    if (finding.repair && !finding.ignored) this.button(buttons, "Preview exact repair", () => void this.plugin.reviewRepairs([finding]), true);
+    if (finding.repair && !finding.ignored) this.button(buttons, this.plugin.settings.reviewBeforeApply ? "Preview exact repair" : "Apply exact repair", () => void this.plugin.reviewRepairs([finding]), true);
     this.button(buttons, finding.ignored ? "Keep ignored" : "Ignore\u2026", () => void this.plugin.ignoreFinding(finding));
   }
   metric(parent, label, value, hint) {
@@ -1650,25 +1685,6 @@ ${diffPreview(plan.before, plan.after)}`).join("\n\n").slice(0, 16e3) });
     };
   }
 };
-var ExportChoiceModal = class extends import_obsidian3.Modal {
-  constructor(app, onChoose) {
-    super(app);
-    __publicField(this, "onChoose", onChoose);
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h2", { text: "Export Cairn report" });
-    contentEl.createEl("p", { text: "Choose a local format. Cairn will show a preview before creating the report file." });
-    ["markdown", "csv", "json"].forEach((format) => {
-      const button = contentEl.createEl("button", { text: format.toUpperCase() });
-      button.onclick = () => {
-        this.close();
-        this.onChoose(format);
-      };
-    });
-  }
-};
 var ExportPreviewModal = class extends import_obsidian3.Modal {
   constructor(app, format, report, onApply) {
     super(app);
@@ -1704,8 +1720,16 @@ var CairnSettingTab = class extends import_obsidian3.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Cairn Vault Linter" });
     containerEl.createEl("p", { text: "All checks run locally. Resetting settings does not change vault notes." });
+    new import_obsidian3.Setting(containerEl).setName("Review repairs before applying").setDesc("Off by default for one-click repairs. Turn on to inspect the before/after changes first.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+      this.plugin.settings.reviewBeforeApply = value;
+      await this.plugin.saveData(this.plugin.settings);
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => {
+      this.plugin.settings.defaultReportFormat = value;
+      await this.plugin.saveData(this.plugin.settings);
+    }));
     new import_obsidian3.Setting(containerEl).setName("Billing").setHeading();
-    containerEl.createEl("p", { text: "Scanning, previews, exports, ignores, rollback, and local inspection are always free. Applying one approved repair batch uses one credit only when a note actually changes. You get 3 free repair batches per local calendar day." });
+    containerEl.createEl("p", { text: "Scanning, optional previews, exports, ignores, rollback, and local inspection are always free. A non-empty repair batch uses one credit. You get 3 free repair batches per local calendar day." });
     const billingSummary = containerEl.createEl("p");
     const renderBillingSummary = () => {
       const used = Math.min(3, Math.max(0, this.plugin.settings.freeRepairBatchesUsed));

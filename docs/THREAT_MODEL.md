@@ -8,7 +8,7 @@ The last scan stores a summary and file signatures only. Ignored findings store 
 
 ## Threats considered
 
-- **Accidental note edits:** scanning is read-only; all repair and export writes require an explicit preview confirmation.
+- **Accidental note edits:** scanning is read-only; review windows are optional, and stale-source checks, a recovery journal, and rollback remain active for every write.
 - **Unauthorized paid write:** repair authorization happens only after a fresh file check and immediately before the first note write. A missing, stale, or no-op batch is not billable; a failed billing check blocks paid repairs.
 - **Duplicate spend:** every free-usage claim and paid spend is persisted before the billable decision/work and reuses the same event ID after an unknown response; checkout likewise persists and reuses its idempotency key.
 - **Identity leakage:** the device ID is random and scoped to this install. Cairn does not fingerprint hardware or store a shared secret.

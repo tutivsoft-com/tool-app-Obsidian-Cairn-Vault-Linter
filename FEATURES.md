@@ -1,6 +1,6 @@
 # Cairn Vault Linter Features
 
-Release: 3.4.14
+Release: 3.4.17
 
 Cairn checks an Obsidian vault for concrete, reviewable maintenance issues. Scanning is read-only; note changes happen only after the user reviews and approves a supported repair.
 
@@ -16,13 +16,13 @@ Cairn checks an Obsidian vault for concrete, reviewable maintenance issues. Scan
 
 - Group findings with source path, line, section, target, surrounding context, severity, and explanation where available.
 - Filter by finding type, severity, folder, and ignored state. Ignore findings with a reason or scope.
-- Preview exact duplicate-link repairs before applying them.
+- Apply exact duplicate-link repairs directly by default; optionally enable before/after review in Settings.
 - Create a recovery journal before a repair batch and roll back the most recent batch when its source files have not changed since the repair.
-- Never delete notes automatically. Scanning, exporting, and previewing are read-only; approved repairs and rollback are the only note-writing actions.
+- Never delete notes automatically. Scanning and inspection are read-only; repair and rollback are the only note-writing actions.
 
 ## Reports and settings
 
-- Export reviewed findings as Markdown, CSV, or JSON, with a preview before a report note is created.
+- Export findings in the configured default Markdown, CSV, or JSON format. Optional review controls apply to both repairs and report creation.
 - Configure individual checks, ignored folders and patterns, hidden-file and non-Markdown scanning, empty-stub thresholds, and report location.
 - Keep scan results, settings, and recovery data in the local Obsidian profile.
 

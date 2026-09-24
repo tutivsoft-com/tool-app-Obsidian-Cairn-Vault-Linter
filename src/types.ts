@@ -45,6 +45,8 @@ export interface CairnSettings {
   pendingFreeUsageClaims: string[];
   pendingRepairCharges: string[];
   pendingCheckoutKeys: Record<string, string>;
+  reviewBeforeApply: boolean;
+  defaultReportFormat: "markdown" | "csv" | "json";
 }
 
 export interface IgnoredFinding {
@@ -162,5 +164,7 @@ export const DEFAULT_SETTINGS: CairnSettings = {
   purchasedRepairBatches: 0,
   pendingFreeUsageClaims: [],
   pendingRepairCharges: [],
-  pendingCheckoutKeys: {}
+  pendingCheckoutKeys: {},
+  reviewBeforeApply: false,
+  defaultReportFormat: "markdown"
 };

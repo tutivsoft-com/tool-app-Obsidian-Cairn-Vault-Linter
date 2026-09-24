@@ -1,11 +1,13 @@
 import {
   App,
   ItemView,
+  Menu,
   Modal,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
+  TAbstractFile,
   TFile,
   TFolder,
   WorkspaceLeaf
@@ -42,6 +44,7 @@ function mergeSettings(data: Partial<CairnSettings> | null | undefined): CairnSe
     ...DEFAULT_SETTINGS,
     ...data,
     checks: { ...DEFAULT_CHECKS, ...(data?.checks || {}) },
+    defaultReportFormat: data?.defaultReportFormat === "csv" || data?.defaultReportFormat === "json" ? data.defaultReportFormat : "markdown",
     lastFileSignatures: data?.lastFileSignatures || {},
     ignoredFindings: data?.ignoredFindings || [],
     pendingRepairCharges: data?.pendingRepairCharges || []
@@ -91,7 +94,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
   private reader!: VaultReader;
 
   async onload(): Promise<void> {
-    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply only explicitly approved repairs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review findings before applying repairs."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply safe repairs directly or with optional review.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Apply safe repairs or enable review in settings."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
     this.support.start();
     this.settings = mergeSettings(await this.loadData());
     await initializeBilling(this);
@@ -104,6 +107,9 @@ export default class CairnVaultLinterPlugin extends Plugin {
     this.addCommand({ id: "scan-changed-notes", name: "Scan changed notes (incremental)", callback: () => void this.runScan(undefined, true) });
     this.addCommand({ id: "cancel-scan", name: "Cancel active scan", callback: () => this.cancelScan() });
     this.addCommand({ id: "rollback-last-repair", name: "Roll back last repair batch", callback: () => void this.rollbackLastRepair() });
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenuItems(menu, file)));
+    this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => this.addFilesMenuItems(menu, files)));
+    this.registerEvent(this.app.workspace.on("editor-menu", (menu, _editor, info) => { if (info.file instanceof TFile) this.addScanMenuItem(menu, [info.file.path], "Cairn: Scan this note"); }));
     this.addSettingTab(new CairnSettingTab(this.app, this));
   }
 
@@ -168,6 +174,31 @@ export default class CairnVaultLinterPlugin extends Plugin {
     if (checking) return !!folder;
     if (folder) void this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path));
     return true;
+  }
+
+  private addScanMenuItem(menu: Menu, paths: string[], title: string): void {
+    if (!paths.length) return;
+    menu.addItem((item) => item.setTitle(title).onClick(() => void this.runScan(paths)));
+  }
+
+  private addFileMenuItems(menu: Menu, file: TAbstractFile): void {
+    if (file instanceof TFile && file.extension.toLowerCase() === "md") {
+      this.addScanMenuItem(menu, [file.path], "Cairn: Scan this note");
+      return;
+    }
+    if (file instanceof TFolder && file.path) {
+      const paths = this.app.vault.getMarkdownFiles().filter((note) => note.path.startsWith(`${file.path}/`)).map((note) => note.path);
+      this.addScanMenuItem(menu, paths, "Cairn: Scan this folder");
+    }
+  }
+
+  private addFilesMenuItems(menu: Menu, selected: TAbstractFile[]): void {
+    const paths = new Set<string>();
+    for (const entry of selected) {
+      if (entry instanceof TFile && entry.extension.toLowerCase() === "md") paths.add(entry.path);
+      else if (entry instanceof TFolder) for (const file of this.app.vault.getMarkdownFiles()) if (file.path.startsWith(`${entry.path}/`)) paths.add(file.path);
+    }
+    this.addScanMenuItem(menu, [...paths], `Cairn: Scan ${paths.size} selected note${paths.size === 1 ? "" : "s"}`);
   }
 
   async runScan(scopePaths?: string[], incremental = false): Promise<void> {
@@ -250,7 +281,8 @@ export default class CairnVaultLinterPlugin extends Plugin {
       new Notice("Cairn found no note changes to apply. Nothing was charged.");
       return;
     }
-    new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
+    if (this.settings.reviewBeforeApply) new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
+    else void this.applyRepairPlans(plans);
   }
 
   private async applyRepairPlans(plans: RepairPlan[]): Promise<void> {
@@ -350,14 +382,16 @@ export default class CairnVaultLinterPlugin extends Plugin {
       return;
     }
     const content = format === "markdown" ? this.markdownReport() : format === "csv" ? this.csvReport() : this.jsonReport();
-    new ExportPreviewModal(this.app, format, content, async () => {
+    const createReport = async () => {
       const folder = this.settings.reportFolder.trim().replace(/^\/+|\/+$/g, "") || "Cairn Reports";
       if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
       const extension = format === "markdown" ? "md" : format;
       const path = `${folder}/cairn-report-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
       await this.app.vault.create(path, content);
       new Notice(`Cairn report exported to ${path}.`);
-    }).open();
+    };
+    if (this.settings.reviewBeforeApply) new ExportPreviewModal(this.app, format, content, createReport).open();
+    else void createReport();
   }
 
   private markdownReport(): string {
@@ -456,9 +490,9 @@ class CairnView extends ItemView {
     const folders = [...new Set(this.plugin.lastFindings.map((finding) => finding.sourcePath.split("/").slice(0, -1).join("/") || "/"))].sort();
     this.select(toolbar, "Folder", this.folderFilter, ["all", ...folders], (value) => { this.folderFilter = value; this.render(); });
     this.select(toolbar, "State", this.stateFilter, ["all", "unresolved", "ignored"], (value) => { this.stateFilter = value; this.render(); });
-    const exportButton = this.button(toolbar, "Export…", () => new ExportChoiceModal(this.app, (format) => void this.plugin.exportReport(format)).open());
+    const exportButton = this.button(toolbar, "Export report", () => void this.plugin.exportReport(this.plugin.settings.defaultReportFormat));
     exportButton.setAttr("aria-label", "Export the current Cairn report");
-    this.button(toolbar, "Review safe repairs", () => void this.plugin.reviewRepairs(this.filteredFindings()));
+    this.button(toolbar, this.plugin.settings.reviewBeforeApply ? "Review safe repairs" : "Apply safe repairs", () => void this.plugin.reviewRepairs(this.filteredFindings()));
     const findings = this.filteredFindings();
     root.createEl("p", { text: `${findings.length} finding(s) shown${this.plugin.lastErrors.length ? ` · ${this.plugin.lastErrors.length} unreadable file(s)` : ""}` }).addClass("cairn-filter-summary");
     const groups = new Map<string, Finding[]>();
@@ -492,7 +526,7 @@ class CairnView extends ItemView {
     meta.appendText(` · ${finding.section} · ${finding.ignored ? `Ignored: ${finding.ignoredReason}` : finding.resolved ? "Resolved target" : "Unresolved"}`);
     if (finding.context) card.createEl("pre", { text: finding.context }).addClass("cairn-context");
     const buttons = card.createDiv({ cls: "cairn-finding-actions" });
-    if (finding.repair && !finding.ignored) this.button(buttons, "Preview exact repair", () => void this.plugin.reviewRepairs([finding]), true);
+    if (finding.repair && !finding.ignored) this.button(buttons, this.plugin.settings.reviewBeforeApply ? "Preview exact repair" : "Apply exact repair", () => void this.plugin.reviewRepairs([finding]), true);
     this.button(buttons, finding.ignored ? "Keep ignored" : "Ignore…", () => void this.plugin.ignoreFinding(finding));
   }
 
@@ -600,8 +634,10 @@ class CairnSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Cairn Vault Linter" });
     containerEl.createEl("p", { text: "All checks run locally. Resetting settings does not change vault notes." });
+    new Setting(containerEl).setName("Review repairs before applying").setDesc("Off by default for one-click repairs. Turn on to inspect the before/after changes first.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveData(this.plugin.settings); }));
+    new Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => { this.plugin.settings.defaultReportFormat = value as "markdown" | "csv" | "json"; await this.plugin.saveData(this.plugin.settings); }));
     new Setting(containerEl).setName("Billing").setHeading();
-    containerEl.createEl("p", { text: "Scanning, previews, exports, ignores, rollback, and local inspection are always free. Applying one approved repair batch uses one credit only when a note actually changes. You get 3 free repair batches per local calendar day." });
+    containerEl.createEl("p", { text: "Scanning, optional previews, exports, ignores, rollback, and local inspection are always free. A non-empty repair batch uses one credit. You get 3 free repair batches per local calendar day." });
     const billingSummary = containerEl.createEl("p");
     const renderBillingSummary = () => {
       const used = Math.min(3, Math.max(0, this.plugin.settings.freeRepairBatchesUsed));

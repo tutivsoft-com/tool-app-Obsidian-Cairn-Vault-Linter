@@ -1,6 +1,6 @@
 # Cairn Vault Linter Software Architecture
 
-Release: 3.4.14
+Release: 3.4.17
 
 ## Runtime shape
 

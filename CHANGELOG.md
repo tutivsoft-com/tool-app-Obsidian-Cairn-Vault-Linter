@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.4.18
+
+- Made exact repairs one-click by default and moved optional review and report format choices into settings.
+
+
+## 3.4.17 - 2026-09-24
+
+- Added right-click scans for Markdown notes, folders, and File Explorer multi-selections, plus editor-context scans for the current note.
+
 ## 3.4.14 - 2026-09-24
 
 - Added current features, architecture, marketing, and requirements documentation.

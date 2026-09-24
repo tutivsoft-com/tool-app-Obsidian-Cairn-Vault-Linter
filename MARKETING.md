@@ -8,13 +8,13 @@ Cairn is a careful maintenance assistant for Obsidian vaults. It finds broken re
 
 ## Short description
 
-Find broken links, missing anchors, duplicates, and dangling notes in an Obsidian vault. Review results and preview safe repairs before changing files.
+Find broken links, missing anchors, duplicates, and dangling notes in an Obsidian vault. Apply safe repairs directly or enable before/after review in Settings.
 
 ## Product description
 
 Cairn scans an Obsidian vault for broken wikilinks, Markdown links, embeds, missing headings and block IDs, invalid aliases, duplicate references, malformed targets, and empty stubs. Users can scan all notes or focus on the current note, folder, or changed notes, then review findings with useful file and line context.
 
-Cairn keeps inspection read-only. Its supported duplicate-link repairs show a before-and-after preview and create recovery data before writes. Users can cancel scans, export reports, ignore known findings, and roll back the latest repair batch when its files have not changed.
+Cairn keeps inspection read-only. Its supported duplicate-link repairs create recovery data before writes; before/after review is optional. Users can cancel scans, export reports in their configured format, ignore known findings, and roll back the latest repair batch when its files have not changed.
 
 Note contents stay in the vault. Optional repair billing uses account and usage metadata; it does not upload the notes being scanned.
 

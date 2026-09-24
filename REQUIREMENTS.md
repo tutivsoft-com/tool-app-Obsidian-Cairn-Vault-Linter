@@ -48,7 +48,7 @@ The user must be able to enable or disable each check and configure the definiti
 
 ### Safe repair workflow
 
-21. Provide a preview before every write operation.
+21. Apply repairs directly by default and offer before/after review as a Settings option.
 22. Offer exact, deterministic repairs such as correcting a confirmed path, updating a confirmed heading target, or removing an exact duplicate link.
 23. Never invent a target based only on fuzzy similarity without showing the proposed replacement and requiring approval.
 24. Never delete an empty note automatically in the MVP.
@@ -102,7 +102,7 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - A user can scan a large vault from one command and understand the result without opening a terminal.
 - Every finding can be traced to a source note and concrete target.
 - A scan never modifies vault content.
-- Approved repairs show a before-and-after preview, create recovery data, and support rollback.
+- Repairs create recovery data and support rollback, with optional before-and-after review.
 - Malformed or unreadable files are reported rather than stopping the scan.
 - The complete MVP works offline with no AI account and no paid credits.
 - The free daily repair allowance works locally; paid repair writes require confirmed credit authorization.
