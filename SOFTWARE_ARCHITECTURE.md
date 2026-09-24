@@ -31,3 +31,9 @@ The source checkout also contains publish/src as the reviewable source mirror us
 ## Build and release
 
 The build runs TypeScript checking and bundles publish/src/main.ts into publish/main.js. The publish directory also carries the matching manifest, stylesheet, complete mirrored source, and user-facing documentation. The public repository mirrors that release surface and attaches main.js, manifest.json, and styles.css to the exact manifest-version GitHub release.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

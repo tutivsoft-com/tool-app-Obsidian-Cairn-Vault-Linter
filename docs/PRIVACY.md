@@ -7,3 +7,9 @@ Billing is optional and is used only when the user signs in, refreshes a balance
 The installation ID, billing email, and rotating billing session tokens are stored in Obsidian's local plugin settings. The installation ID identifies this installation for the linked account; it is not a hardware fingerprint. Users can clear the email by signing out or changing it in settings. Resetting Cairn analysis settings preserves the billing identity so purchased credits do not become inaccessible by accident.
 
 If a paid spend cannot be confirmed, Cairn refuses the repair and keeps notes unchanged. The plugin never fails open into paid note writes. For billing questions, use the receipt or TutivSoft support channel associated with the checkout.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

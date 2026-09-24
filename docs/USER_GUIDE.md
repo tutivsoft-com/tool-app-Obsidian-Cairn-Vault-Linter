@@ -17,3 +17,9 @@ Each local calendar day includes 3 free repair batches, claimed from TutivSoft's
 In Settings → Billing, enter your billing email and sign in or create an account, review today's free usage and the purchased balance, refresh the balance, or open checkout for the live Cairn packs. The installation ID is randomly generated and stored locally for this install; it is not a password or hardware fingerprint. Cairn renews the billing session when possible, persists checkout/spend idempotency state, and polls checkout settlement after opening. No note contents are sent for billing.
 
 Settings let you disable individual rules, manage billing, ignore folders/patterns, include hidden or non-Markdown files, tune the empty-stub definition, and choose the report folder. Reset returns analysis settings to their conservative defaults while preserving the billing identity and balance settings.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

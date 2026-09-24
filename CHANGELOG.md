@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.19 (2026-09-24)
+
+- Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+
+
 ## 3.4.18
 
 - Made exact repairs one-click by default and moved optional review and report format choices into settings.

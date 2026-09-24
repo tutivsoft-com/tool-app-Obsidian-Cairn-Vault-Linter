@@ -107,3 +107,9 @@ AI is not needed. Broken links, duplicate links, aliases, block IDs, and empty s
 - The complete MVP works offline with no AI account and no paid credits.
 - The free daily repair allowance works locally; paid repair writes require confirmed credit authorization.
 - Checkout uses the live Cairn plan codes (`one_time` and `standard`), persists idempotency state, polls settlement, and no no-op repair consumes a credit.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

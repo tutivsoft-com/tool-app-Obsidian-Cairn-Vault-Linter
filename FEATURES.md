@@ -36,3 +36,9 @@ Scanning, reviewing, exporting, ignoring, and rollback are free. A credit is use
 - Automated repairs are limited to exact, reviewable duplicate-link cleanup. Other findings remain available for manual correction.
 - Run a full scan after large renames or structural changes to refresh the vault-wide index.
 - AI-generated analysis is not used.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

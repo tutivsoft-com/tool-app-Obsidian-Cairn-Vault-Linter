@@ -25,3 +25,9 @@ Obsidian plugins run with access to the active vault. Install Cairn only from a 
 ## Known limitations
 
 Cairn's Markdown parser intentionally favors safe, explainable matches over full CommonMark coverage. Complex nested Markdown destinations, dynamically generated links, plugin-specific syntaxes, and links assembled by scripts may be reported as unresolved or malformed. A full scan should be used after bulk renames because incremental scans prioritize avoiding reads of unchanged notes. Checkout uses the live Cairn plan codes and polls Constance checkout status after opening; the legacy `/buy` price-ID path is only a compatibility fallback for an older central route.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->

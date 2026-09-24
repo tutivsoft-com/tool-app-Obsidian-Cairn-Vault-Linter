@@ -35,3 +35,9 @@ Note contents stay in the vault. Optional repair billing uses account and usage 
 ## Claim boundaries
 
 Do not describe Cairn as an automatic vault-cleaner, AI repair tool, or cloud scanner. Do not promise a fixed scan time or a specific performance level; results depend on vault size and device. Explain that billing network requests may be used for account and repair-credit operations, while note contents remain local.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v3.4.19)
+
+Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+<!-- one-click-workflow:end -->
