@@ -1,20 +1,16 @@
 # Cairn Vault Linter
 
-Version: `3.4.22`
+Version: `3.4.25`
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
 Scans and repairs run locally. Repairs apply directly by default, with a **Review repairs before applying** setting for users who want a before/after approval window. Billing only authorizes a repair batch; Cairn never uploads note contents.
 
-## Install and build
+## Install
 
-For development, install dependencies and run:
+Install **Cairn Vault Linter** from Obsidian's Community plugins browser, then enable it in Settings → Community plugins.
 
-```bash
-npm run build
-```
-
-Copy `publish/main.js`, `publish/manifest.json`, and `publish/styles.css` into `.obsidian/plugins/cairn-vault-linter/` in a test vault, then enable the plugin in Obsidian. The complete public source and documentation are mirrored in `publish/` for review and release.
+For manual installation, download `main.js`, `manifest.json`, and `styles.css` from the [TutivSoft GitHub releases](https://github.com/tutivsoft-com/tool-app-Obsidian-Cairn-Vault-Linter/releases). Copy them into `YourVault/.obsidian/plugins/cairn-vault-linter/`, then enable Cairn in Obsidian.
 
 ## Use
 
@@ -47,33 +43,18 @@ Ignored folders and simple `*` file patterns are vault-relative. Hidden files an
 
 Scanning reads vault files through the Obsidian API and stores only local plugin settings, file signatures, ignored-finding reasons, and the last summary. Exported reports contain the findings the user chose to export. Repair rollback data is stored locally in the plugin folder because it must retain the exact pre-repair text. Billing is the only network activity, and it sends billing metadata only as described above.
 
-See [`docs/CONSTANCE_BILLING.md`](docs/CONSTANCE_BILLING.md), [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), and [`docs/PRIVACY.md`](docs/PRIVACY.md) for the current billing contract mapping, threat model, billing data flow, and safe-repair boundaries.
+See the [user guide](docs/USER_GUIDE.md) for scan, repair, rollback, and export instructions.
 
-## Development
+## Public source
 
-```bash
-npm run typecheck
-npm test
-npm run build
-```
-
-Tests cover deterministic path/heading parsing, link resolution, duplicate detection, empty-stub rules, ignored findings, CSV escaping, journal-safe repair behavior, daily free allowances, device IDs, spend payloads, and the no-op billing guard. The release artifact is built from the mirrored TypeScript under `publish/src/`.
-
-## Product documentation
-
-- [Features](FEATURES.md)
-- [Product requirements](REQUIREMENTS.md)
-- [Software architecture](SOFTWARE_ARCHITECTURE.md)
-- [Marketing brief](MARKETING.md)
-- [User guide](docs/USER_GUIDE.md)
-- [Privacy](docs/PRIVACY.md) and [threat model](docs/THREAT_MODEL.md)
+The TutivSoft repository contains the curated files approved for public source review and Obsidian Community releases. The complete implementation, build configuration, tests, and release preparation remain in the private source repository.
 
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v3.4.19)
+## Current workflow defaults
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
 <!-- one-click-workflow:end -->

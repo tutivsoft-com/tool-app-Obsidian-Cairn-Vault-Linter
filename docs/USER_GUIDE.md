@@ -19,7 +19,7 @@ In Settings → Billing, enter your billing email and sign in or create an accou
 Settings let you disable individual rules, manage billing, ignore folders/patterns, include hidden or non-Markdown files, tune the empty-stub definition, and choose the report folder. Reset returns analysis settings to their conservative defaults while preserving the billing identity and balance settings.
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v3.4.19)
+## Current workflow defaults
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
 <!-- one-click-workflow:end -->

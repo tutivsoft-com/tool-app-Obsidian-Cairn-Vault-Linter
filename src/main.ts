@@ -101,12 +101,12 @@ export default class CairnVaultLinterPlugin extends Plugin {
     this.reader = this.createReader();
     this.registerView(VIEW_TYPE_CAIRN, (leaf) => new CairnView(leaf, this));
     this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => void this.openDashboard());
-    this.addCommand({ id: "scan-full-vault", name: "Scan full vault", callback: () => void this.runScan() });
+    this.addCommand({ id: "scan-full-vault", name: "Scan full vault", callback: () => this.runScan() });
     this.addCommand({ id: "scan-current-note", name: "Scan current note", checkCallback: (checking) => this.scanCurrentNote(checking) });
     this.addCommand({ id: "scan-current-folder", name: "Scan current folder", checkCallback: (checking) => this.scanCurrentFolder(checking) });
-    this.addCommand({ id: "scan-changed-notes", name: "Scan changed notes (incremental)", callback: () => void this.runScan(undefined, true) });
+    this.addCommand({ id: "scan-changed-notes", name: "Scan changed notes (incremental)", callback: () => this.runScan(undefined, true) });
     this.addCommand({ id: "cancel-scan", name: "Cancel active scan", callback: () => this.cancelScan() });
-    this.addCommand({ id: "rollback-last-repair", name: "Roll back last repair batch", callback: () => void this.rollbackLastRepair() });
+    this.addCommand({ id: "rollback-last-repair", name: "Roll back last repair batch", callback: () => this.rollbackLastRepair() });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.addFileMenuItems(menu, file)));
     this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => this.addFilesMenuItems(menu, files)));
     this.registerEvent(this.app.workspace.on("editor-menu", (menu, _editor, info) => { if (info.file instanceof TFile) this.addScanMenuItem(menu, [info.file.path], "Cairn: Scan this note"); }));
@@ -632,6 +632,7 @@ class CairnSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    this.plugin.support.addDiagnosticsSetting(containerEl);
     containerEl.createEl("h2", { text: "Cairn Vault Linter" });
     containerEl.createEl("p", { text: "All checks run locally. Resetting settings does not change vault notes." });
     new Setting(containerEl).setName("Review repairs before applying").setDesc("Off by default for one-click repairs. Turn on to inspect the before/after changes first.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveData(this.plugin.settings); }));
