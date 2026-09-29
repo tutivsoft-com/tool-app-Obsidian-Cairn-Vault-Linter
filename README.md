@@ -58,3 +58,5 @@ MIT. See [`LICENSE`](LICENSE).
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
 <!-- one-click-workflow:end -->
+
+Billing account recovery: use **Forgot password?** in the plugin settings to open the Constance reset page. Signing out clears the local tokens and requests server session revocation.
