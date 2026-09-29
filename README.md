@@ -55,3 +55,6 @@ MIT. See [`LICENSE`](LICENSE).
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
 <!-- one-click-workflow:end -->
+
+
+Billing account recovery: use **Forgot password?** in settings to open the central reset page. Sign-out clears saved tokens and requests server session revocation. After registration, verify your email before signing in.
