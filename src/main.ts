@@ -1,3 +1,4 @@
+import { reserveNative, renderNativePacks, jobId, digest, recoverNative, type NativeReservation } from "./native-operations";
 import {
   App,
   ItemView,
@@ -15,7 +16,7 @@ import {
 import { applyIgnoredFindings, findingCounts, scanVault, type VaultReader } from "./core";
 import { applyTextRepairs, canRollback } from "./repair";
 import { prepareRepairJournal } from "./journal";
-import { initializeBilling, hasWritableRepairPlans, openCheckout, pollCheckout, reserveRepairBatch, syncBalance } from "./billing";
+import { initializeBilling, hasWritableRepairPlans, pollCheckout, reserveRepairBatch, syncBalance } from "./billing";
 import { addBillingAccountSettings } from "./constance-account";
 import type { CairnSettings, Finding, FindingType, RepairJournal, RepairProposal, ScanError, ScanProgress, ScanResult, Severity } from "./types";
 import { DEFAULT_CHECKS, DEFAULT_SETTINGS } from "./types";
@@ -44,6 +45,7 @@ function mergeSettings(data: Partial<CairnSettings> | null | undefined): CairnSe
     ...DEFAULT_SETTINGS,
     ...data,
     checks: { ...DEFAULT_CHECKS, ...(data?.checks || {}) },
+    settingsMode: data?.settingsMode === "advanced" ? "advanced" : "simple",
     defaultReportFormat: data?.defaultReportFormat === "csv" || data?.defaultReportFormat === "json" ? data.defaultReportFormat : "markdown",
     lastFileSignatures: data?.lastFileSignatures || {},
     ignoredFindings: data?.ignoredFindings || [],
@@ -91,6 +93,17 @@ export default class CairnVaultLinterPlugin extends Plugin {
   lastScan: ScanResult | null = null;
   scanAbort: AbortController | null = null;
   private repairApplying = false;
+  private scannedSources=new Map<string,string>();
+  private scanPreview?: {id:string;result:ScanResult;findings:Finding[];revealed:boolean;authorization?:NativeReservation};
+  private repairAuthorizations=new WeakMap<RepairPlan[],NativeReservation>();
+  async revealReport(): Promise<boolean> {
+    const preview=this.scanPreview;if(!preview)return false;
+    if(!preview.revealed){
+      const authorization=await reserveNative({app:this.app,settings:this.settings,persistNative:()=>this.persistBillingSettings()},"cairn-vault-linter",preview.id,JSON.stringify(preview.result.signatures),JSON.stringify(preview.result),{files:preview.result.filesScanned,edits:preview.findings.filter(f=>f.repair).length},true);
+      if(!authorization)return false;preview.revealed=true;preview.authorization=authorization;
+    }
+    this.lastFindings=preview.findings;await this.refreshDashboard();return true;
+  }
   private reader!: VaultReader;
 
   async onload(): Promise<void> {
@@ -98,6 +111,8 @@ export default class CairnVaultLinterPlugin extends Plugin {
     this.support.start();
     this.settings = mergeSettings(await this.loadData());
     await initializeBilling(this);
+    await recoverNative({app:this.app,settings:this.settings,persistNative:()=>this.persistBillingSettings()});
+    this.registerInterval(window.setInterval(() => { if (Object.keys(this.settings.pendingCheckoutKeys ?? {}).length) void syncBalance(this); }, 15000));
     this.reader = this.createReader();
     this.registerView(VIEW_TYPE_CAIRN, (leaf) => new CairnView(leaf, this));
     this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => void this.openDashboard());
@@ -139,9 +154,10 @@ export default class CairnVaultLinterPlugin extends Plugin {
     return {
       getFiles,
       read: async (record) => {
+        if(record.size>200000)throw new Error("Local preview CPU/memory bound: choose a note below 200 KB.");
         const file = this.app.vault.getAbstractFileByPath(record.path);
         if (!(file instanceof TFile)) throw new Error("File is no longer available");
-        return this.app.vault.read(file);
+        const content=await this.app.vault.read(file);this.scannedSources.set(file.path,content);return content;
       }
     };
   }
@@ -206,6 +222,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       new Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
       return;
     }
+    if(!this.settings.billingAccountLinked){const count=scopePaths?.length || this.app.vault.getMarkdownFiles().length;if(count>5){new Notice("Guest repair/report preview supports up to five notes. Select a smaller scope; nothing was scanned or saved.");return;}}
     await this.openDashboard();
     this.scanAbort = new AbortController();
     const view = this.getView();
@@ -218,7 +235,10 @@ export default class CairnVaultLinterPlugin extends Plugin {
       }
       this.lastScan = result;
       this.lastErrors = result.errors;
-      this.lastFindings = applyIgnoredFindings(result.findings, this.settings.ignoredFindings);
+      const fullFindings=applyIgnoredFindings(result.findings, this.settings.ignoredFindings);
+      this.scanPreview={id:jobId(),result,findings:fullFindings,revealed:false};
+      this.lastFindings = fullFindings.slice(0,3);
+      this.lastErrors = result.errors.slice(0,2);
       const counts = findingCounts(this.lastFindings);
       this.settings.previousFindingCount = this.settings.lastScanFindingCount;
       this.settings.lastScanAt = new Date().toISOString();
@@ -227,9 +247,9 @@ export default class CairnVaultLinterPlugin extends Plugin {
       this.settings.lastScanFileCount = result.filesScanned;
       this.settings.lastScanDurationMs = result.durationMs;
       this.settings.lastFileSignatures = result.signatures;
-      await this.saveData(this.settings);
+      if(this.settings.billingAccountLinked) await this.saveData(this.settings);
       await this.refreshDashboard();
-      new Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
+      new Notice(`Limited memory-only preview. Keep Cairn open through sign-in; reveal the exact report. Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
     } catch (error) {
       new Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -272,7 +292,8 @@ export default class CairnVaultLinterPlugin extends Plugin {
     for (const [path, fileFindings] of grouped) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!(file instanceof TFile)) continue;
-      const before = await this.app.vault.read(file);
+      const before = this.scannedSources.get(path);
+      if(before===undefined || await this.app.vault.read(file)!==before){new Notice("Source changed since the preserved scan. Original report retained; run a separately priced new scan or review a merge.");continue;}
       const proposals = fileFindings.map((finding) => finding.repair!);
       const after = applyTextRepairs(before, proposals).after;
       if (after !== before) plans.push({ path, before, after, proposals });
@@ -281,8 +302,12 @@ export default class CairnVaultLinterPlugin extends Plugin {
       new Notice("Cairn found no note changes to apply. Nothing was charged.");
       return;
     }
-    if (this.settings.reviewBeforeApply) new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected)).open();
-    else void this.applyRepairPlans(plans);
+    const previewJobId=jobId();
+    new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected),async()=>{
+      if(this.scanPreview?.revealed && this.scanPreview.authorization){this.repairAuthorizations.set(plans,this.scanPreview.authorization);return true;}
+      const authorization=await reserveNative({app:this.app,settings:this.settings,persistNative:()=>this.persistBillingSettings()},"cairn-vault-linter",previewJobId,JSON.stringify(plans.map(p=>p.before)),JSON.stringify(plans),{files:plans.length,edits:plans.reduce((n,p)=>n+p.proposals.length,0)},true);
+      if(!authorization)return false;this.repairAuthorizations.set(plans,authorization);return true;
+    }).open();
   }
 
   private async applyRepairPlans(plans: RepairPlan[]): Promise<void> {
@@ -312,7 +337,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       const restoreJournal = await prepareRepairJournal(this.app.vault.adapter, this.journalPath(), JSON.stringify(journal));
       let reservation;
       try {
-        reservation = await reserveRepairBatch(this);
+        reservation = this.repairAuthorizations.get(plans) || await reserveRepairBatch(this,undefined,JSON.stringify(readyPlans.map(p=>p.before)),JSON.stringify(readyPlans),{files:readyPlans.length,edits:readyPlans.reduce((n,p)=>n+p.proposals.length,0)});
       } catch (error) {
         await restoreJournal();
         throw error;
@@ -322,6 +347,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
         return;
       }
 
+      if(reservation.markWriting && !await reservation.markWriting(await Promise.all(readyPlans.map(async plan=>({path:plan.path,before:await digest(plan.before),after:await digest(plan.after)})))))return;
       const changed: string[] = [];
       const failed: string[] = [];
       for (const plan of readyPlans) {
@@ -330,7 +356,8 @@ export default class CairnVaultLinterPlugin extends Plugin {
           if (!(file instanceof TFile)) { skipped.push(plan.path); continue; }
           const current = await this.app.vault.read(file);
           if (current !== plan.before) { skipped.push(plan.path); continue; }
-          await this.app.vault.modify(file, plan.after);
+          await this.app.vault.process(file,latest=>{if(latest!==plan.before)throw new Error("Source changed; original preview retained.");return plan.after;});
+          if(await this.app.vault.read(file)!==plan.after)throw new Error("Repair write outcome uncertain; journal retained.");
           changed.push(plan.path);
         } catch (error) {
           failed.push(`${plan.path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -381,6 +408,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       new Notice("Run a scan before exporting a report.");
       return;
     }
+    if(!await this.revealReport())return;
     const content = format === "markdown" ? this.markdownReport() : format === "csv" ? this.csvReport() : this.jsonReport();
     const createReport = async () => {
       const folder = this.settings.reportFolder.trim().replace(/^\/+|\/+$/g, "") || "Cairn Reports";
@@ -456,6 +484,7 @@ class CairnView extends ItemView {
     this.button(actions, "Current note", () => this.plugin.scanCurrentNote(false));
     this.button(actions, "Current folder", () => this.plugin.scanCurrentFolder(false));
     this.button(actions, "Cancel", () => this.plugin.cancelScan(), false, !!this.plugin.scanAbort);
+    this.button(actions,"Reveal exact full report",()=>void this.plugin.revealReport());
     this.button(actions, "Rollback last repair", () => void this.plugin.rollbackLastRepair());
     if (this.progress) {
       const progress = root.createDiv({ cls: "cairn-progress" });
@@ -578,13 +607,13 @@ class IgnoreModal extends Modal {
 }
 
 class RepairPreviewModal extends Modal {
-  constructor(app: App, private plans: RepairPlan[], private onApply: (plans: RepairPlan[]) => void) { super(app); }
+  constructor(app: App, private plans: RepairPlan[], private onApply: (plans: RepairPlan[]) => void, private reveal:()=>Promise<boolean>) { super(app); }
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "Review exact repairs" });
     contentEl.createEl("p", { text: `${this.plans.length} file(s) will change. No note is written until you choose Apply repairs. A recovery journal is created first.` });
-    const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n").slice(0, 16000) });
+    const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n").slice(0, 500) });
     preview.setAttr("aria-label", "Before and after repair preview");
     preview.style.maxHeight = "420px";
     preview.style.overflow = "auto";
@@ -593,6 +622,10 @@ class RepairPreviewModal extends Modal {
     cancel.onclick = () => this.close();
     const apply = actions.createEl("button", { text: "Apply repairs" });
     apply.addClass("mod-cta");
+    apply.disabled=true;
+    contentEl.createEl("p",{text:"Limited memory-only repair preview. Keep this modal open through sign-in/verification. Full reveal charges once; apply the exact result without a second debit."});
+    const reveal=actions.createEl("button",{text:"Reveal exact full repairs"});
+    reveal.onclick=()=>void this.reveal().then(ok=>{if(ok){preview.setText(this.plans.map(p=>`## ${p.path}\n${diffPreview(p.before,p.after)}`).join("\n\n"));apply.disabled=false;reveal.disabled=true;}});
     apply.onclick = () => { this.close(); this.onApply(this.plans); };
   }
 }
@@ -632,34 +665,37 @@ class CairnSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    this.plugin.support.addDiagnosticsSetting(containerEl);
+    const advanced = this.plugin.settings.settingsMode === "advanced";
+    new Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday settings. Advanced adds scan rules, limits, and diagnostics.").addDropdown((dropdown) => dropdown.addOptions({ simple: "Simple", advanced: "Advanced" }).setValue(advanced ? "advanced" : "simple").onChange(async (value) => { this.plugin.settings.settingsMode = value === "advanced" ? "advanced" : "simple"; await this.plugin.saveData(this.plugin.settings); this.display(); }));
+    if (advanced) this.plugin.support.addDiagnosticsSetting(containerEl);
     containerEl.createEl("h2", { text: "Cairn Vault Linter" });
     containerEl.createEl("p", { text: "All checks run locally. Resetting settings does not change vault notes." });
-    new Setting(containerEl).setName("Review repairs before applying").setDesc("Off by default for one-click repairs. Turn on to inspect the before/after changes first.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => { this.plugin.settings.defaultReportFormat = value as "markdown" | "csv" | "json"; await this.plugin.saveData(this.plugin.settings); }));
+    new Setting(containerEl).setName("Review repairs before applying").setDesc("Preview each repair before changing notes. Recommended for unfamiliar vaults.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => { this.plugin.settings.defaultReportFormat = value as "markdown" | "csv" | "json"; await this.plugin.saveData(this.plugin.settings); }));
     new Setting(containerEl).setName("Billing").setHeading();
-    containerEl.createEl("p", { text: "Scanning, optional previews, exports, ignores, rollback, and local inspection are always free. A non-empty repair batch uses one credit. You get 3 free repair batches per local calendar day." });
+    containerEl.createEl("p",{text:"Guests see a limited report/repair preview kept in memory. Full report or repair reveal consumes one native unit once. Verified accounts receive a lifetime starter allowance of up to five operations; Constance confirms the split. Restore and rollback remain free."});
     const billingSummary = containerEl.createEl("p");
     const renderBillingSummary = () => {
-      const used = Math.min(3, Math.max(0, this.plugin.settings.freeRepairBatchesUsed));
-      billingSummary.setText(`Today: ${used}/3 free repair batches used · Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
+      const used = Math.min(5, Math.max(0, this.plugin.settings.freeRepairBatchesUsed));
+      billingSummary.setText(`Lifetime cached: ${used}/5 free repair batches used · Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
     };
     renderBillingSummary();
+    void renderNativePacks(containerEl,{app:this.app,settings:this.plugin.settings,persistNative:()=>this.plugin.persistBillingSettings()},"cairn-vault-linter",priceId=>import("./billing").then(({openPriceCheckout})=>openPriceCheckout(this.plugin,priceId)));
     addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: "cairn-vault-linter", installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.persistBillingSettings(), syncBalance: () => syncBalance(this.plugin), refresh: () => this.display() });
-    const buySetting = new Setting(containerEl).setName("Buy repair credits").setDesc("One credit authorizes one approved repair batch. Checkout opens only after the exact Cairn price is provisioned.");
-    buySetting.addButton((button) => button.setButtonText("Buy $1 (100 credits)").onClick(() => void openCheckout(this.plugin, "usd_001")));
-    buySetting.addButton((button) => button.setButtonText("Buy $10 (1,000 credits)").setCta().onClick(() => void openCheckout(this.plugin, "usd_010")));
-    new Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for this install.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => { button.setDisabled(true); button.setButtonText("Refreshing…"); await syncBalance(this.plugin); renderBillingSummary(); button.setDisabled(false); button.setButtonText("Refresh balance"); }));
-    void syncBalance(this.plugin).then(renderBillingSummary);
-    containerEl.createEl("h3", { text: "Checks" });
-    (Object.keys(DEFAULT_CHECKS) as FindingType[]).forEach((type) => new Setting(containerEl).setName(FINDING_LABELS[type]).addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => { this.plugin.settings.checks[type] = value; await this.plugin.saveData(this.plugin.settings); })));
-    new Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => { this.plugin.settings.ignoredFolders = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one pattern per line.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => { this.plugin.settings.ignoredPatterns = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Scan hidden files").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => { this.plugin.settings.scanHiddenFiles = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => { this.plugin.settings.scanNonMarkdownFiles = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Nearly empty maximum characters").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxCharacters = number; await this.plugin.saveData(this.plugin.settings); } }));
-    new Setting(containerEl).setName("Nearly empty maximum meaningful lines").addText((text) => text.setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => { const number = Number(value); if (Number.isFinite(number) && number >= 0) { this.plugin.settings.emptyStubMaxMeaningfulLines = number; await this.plugin.saveData(this.plugin.settings); } }));
-    new Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => { this.plugin.settings.reportFolder = value; await this.plugin.saveData(this.plugin.settings); }));
-    new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = { constanceDeviceId: this.plugin.settings.constanceDeviceId, billingEmail: this.plugin.settings.billingEmail, billingAccessToken: this.plugin.settings.billingAccessToken, billingRefreshToken: this.plugin.settings.billingRefreshToken, billingAccountLinked: this.plugin.settings.billingAccountLinked, freeRepairDay: this.plugin.settings.freeRepairDay, freeRepairBatchesUsed: this.plugin.settings.freeRepairBatchesUsed, purchasedRepairBatches: this.plugin.settings.purchasedRepairBatches, pendingFreeUsageClaims: this.plugin.settings.pendingFreeUsageClaims, pendingRepairCharges: this.plugin.settings.pendingRepairCharges, pendingCheckoutKeys: this.plugin.settings.pendingCheckoutKeys }; this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
+
+
+
+    new Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for your connected account.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => { button.setDisabled(true); button.setButtonText("Refreshing…"); try { await syncBalance(this.plugin, undefined, true); renderBillingSummary(); } catch { new Notice("Balance could not be refreshed. Check your connection and retry."); } finally { button.setDisabled(false); button.setButtonText("Refresh balance"); } }));
+    void syncBalance(this.plugin).then(renderBillingSummary).catch(() => { billingSummary.setText("Balance unavailable. Refresh to retry."); });
+    if (advanced) containerEl.createEl("h3", { text: "Checks" });
+    if (advanced) (Object.keys(DEFAULT_CHECKS) as FindingType[]).forEach((type) => new Setting(containerEl).setName(FINDING_LABELS[type]).setDesc("Include this check in the next scan. Findings explain the issue before any repair.").addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => { this.plugin.settings.checks[type] = value; await this.plugin.saveData(this.plugin.settings); })));
+    new Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line, for example Templates or Private.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => { this.plugin.settings.ignoredFolders = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one per line; for example Templates/**.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => { this.plugin.settings.ignoredPatterns = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Scan hidden files").setDesc("Include dot-prefixed files. Leave off to skip internal vault files.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => { this.plugin.settings.scanHiddenFiles = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => { this.plugin.settings.scanNonMarkdownFiles = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Nearly empty maximum characters").setDesc("Notes at or below this character count may be nearly empty.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxCharacters)]: `${this.plugin.settings.emptyStubMaxCharacters} · current`, "60": "60 \u00b7 short stub", "120": "120 \u00b7 recommended", "240": "240 \u00b7 longer stub"}).setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => { this.plugin.settings.emptyStubMaxCharacters = Number(value); await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Nearly empty maximum meaningful lines").setDesc("Ignore blank lines and frontmatter when identifying nearly empty notes.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxMeaningfulLines)]: `${this.plugin.settings.emptyStubMaxMeaningfulLines} · current`, "1": "1 line", "3": "3 lines \u00b7 recommended", "5": "5 lines"}).setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => { this.plugin.settings.emptyStubMaxMeaningfulLines = Number(value); await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => { this.plugin.settings.reportFolder = value; await this.plugin.saveData(this.plugin.settings); }));
+    if (advanced) new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => { const billing = Object.fromEntries(Object.entries(this.plugin.settings).filter(([key]) => /^(?:billing|constance|freeRepair|purchasedRepair|pending|recovered)/.test(key))); this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset."); }));
   }
 }
