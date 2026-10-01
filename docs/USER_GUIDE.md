@@ -17,7 +17,7 @@ Use **Connect** with your email and password. A new account is registered; an ex
 Constance is the billing authority. Credit units remain app-specific: characters, OCR pages, searches, conversions, repair/protection batches, or captures. Checkout return URLs and cached balances never grant credits. Payment fulfillment comes from the server’s verified Paddle webhook, and balances refresh from authenticated entitlements. Unknown usage or checkout results reuse the persisted operation ID; they must not create a new debit or alternative checkout.
 
 
-See [local billing changes](../BILLING_REVIEW_2026-09-30.md). This section describes the current local source; older release walkthroughs below apply to their dated artifacts. Constance must support `/api/v1/auth/connect` before these clients are released.
+Prices and product descriptions load from Constance and Paddle. Checkout is enabled only when the current provider price is active, linked to its product, and marked available by Constance. Purchases are confirmed by the server after Paddle verifies payment.
 <!-- BILLING-CURRENT-2026-09-30:END -->
 
 # Cairn user guide
