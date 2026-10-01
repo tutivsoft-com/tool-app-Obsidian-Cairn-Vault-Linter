@@ -1,6 +1,6 @@
 # Cairn Vault Linter
 
-Version: `3.4.30`
+Public candidate manifest: `3.4.32` (latest completed Community release: `3.4.30`; private source: `3.4.33`)
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
 
