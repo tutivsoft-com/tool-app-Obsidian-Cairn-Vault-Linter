@@ -18,6 +18,7 @@ export interface RuleSettings {
 }
 
 export interface CairnSettings {
+  settingsMode: "simple" | "advanced";
   checks: RuleSettings;
   ignoredFolders: string;
   ignoredPatterns: string;
@@ -138,6 +139,7 @@ export const DEFAULT_CHECKS: RuleSettings = {
 };
 
 export const DEFAULT_SETTINGS: CairnSettings = {
+  settingsMode: "simple",
   checks: { ...DEFAULT_CHECKS },
   ignoredFolders: ".obsidian\n.trash",
   ignoredPatterns: "Templates/**\nAttachments/**",
