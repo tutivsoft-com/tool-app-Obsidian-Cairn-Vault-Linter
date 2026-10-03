@@ -1,12 +1,11 @@
 # Cairn Vault Linter
 
-Version: 3.4.36 — validated locally for publication; release pending.
+Version: 3.4.37 — release source validated.
 
 ## Current purchase behavior
 
 Purchase settings load the current public product catalog from Constance. Each available offer supplies its exact Paddle price ID, native-unit grant, unit name, and formatted amount. The client displays backend-provided amounts, enables only offers marked available, and submits the selected price ID through authenticated checkout with quantity one. The current approved one-time packs grant 50, 150, 450, or 1,200 repair batches for USD $2, $4, $8, or $14; client code does not contain price amounts. Existing account balances and granted credits remain associated with the account.
 
-<!-- SETTINGS-CURRENT-2026-09-30 -->
 
 ## Preview and lifetime allowance
 
@@ -23,9 +22,7 @@ Repair writes follow durable reserve → write → verify → commit. Full-resul
 Settings default to **Simple** and remember the selected mode. Simple contains everyday controls and account/billing. **Advanced** contains specialist parameters, diagnostics, and less frequent preferences. Inline help explains choices.
 
 Cairn has no AI feature and does not request AI provider keys. Constance handles account access and Paddle billing only.
-<!-- SETTINGS-CURRENT-2026-09-30:END -->
 
-<!-- BILLING-CURRENT-2026-09-30 -->
 ## Current local account and billing behavior
 
 Use **Connect** with your email and password. A new account is registered; an existing account is authenticated. New users must follow the emailed verification link and Connect again. Incorrect passwords offer password recovery; passwords are never saved. Paid purchases and free allowances belong to the authenticated account, not a locally entered email or an editable cached balance. Reinstalling does not replenish the same account's allowance.
@@ -33,7 +30,6 @@ Use **Connect** with your email and password. A new account is registered; an ex
 Constance is the billing authority. Credit units remain app-specific: characters, OCR pages, searches, conversions, repair/protection batches, or captures. Checkout return URLs and cached balances never grant credits. Payment fulfillment comes from the server’s verified Paddle webhook, and balances refresh from authenticated entitlements. Unknown usage or checkout results reuse the persisted operation ID; they must not create a new debit or alternative checkout.
 
 
-<!-- BILLING-CURRENT-2026-09-30:END -->
 
 
 Cairn is an offline Obsidian maintenance plugin that audits a vault for broken links, missing headings and block IDs, invalid aliases, duplicate references, duplicate IDs, malformed targets, and empty dangling Markdown stubs.
@@ -73,11 +69,9 @@ Scanning reads vault files through the Obsidian API and stores only local plugin
 
 MIT. See [`LICENSE`](LICENSE).
 
-<!-- one-click-workflow:start -->
-## Workflow defaults (v3.4.36)
+## Workflow defaults
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
-<!-- one-click-workflow:end -->
 
 ## Account, billing, and credit feedback
 

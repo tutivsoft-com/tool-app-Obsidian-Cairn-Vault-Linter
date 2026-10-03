@@ -1,4 +1,3 @@
-<!-- BILLING-CURRENT-2026-09-30 -->
 
 ## Preview and lifetime allowance
 
@@ -17,7 +16,6 @@ Use **Connect** with your email and password. A new account is registered; an ex
 Constance is the billing authority. Credit units remain app-specific: characters, OCR pages, searches, conversions, repair/protection batches, or captures. Checkout return URLs and cached balances never grant credits. Payment fulfillment comes from the server’s verified Paddle webhook, and balances refresh from authenticated entitlements. Unknown usage or checkout results reuse the persisted operation ID; they must not create a new debit or alternative checkout.
 
 
-<!-- BILLING-CURRENT-2026-09-30:END -->
 
 # Cairn user guide
 
@@ -36,8 +34,6 @@ In Settings → Billing, enter your billing email and sign in or create an accou
 
 Settings let you disable individual rules, manage billing, ignore folders/patterns, include hidden or non-Markdown files, tune the empty-stub definition, and choose the report folder. Reset returns analysis settings to their conservative defaults while preserving the billing identity and balance settings.
 
-<!-- one-click-workflow:start -->
 ## Current workflow defaults
 
 Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
-<!-- one-click-workflow:end -->
