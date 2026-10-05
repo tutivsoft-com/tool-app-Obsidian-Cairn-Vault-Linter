@@ -99,10 +99,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
   private repairAuthorizations=new WeakMap<RepairPlan[],NativeReservation>();
   async revealReport(): Promise<boolean> {
     const preview=this.scanPreview;if(!preview)return false;
-    if(!preview.revealed){
-      const authorization=await reserveNative({app:this.app,settings:this.settings,persistNative:()=>this.persistBillingSettings()},"cairn-vault-linter",preview.id,JSON.stringify(preview.result.signatures),JSON.stringify(preview.result),{files:preview.result.filesScanned,edits:preview.findings.filter(f=>f.repair).length},true);
-      if(!authorization)return false;preview.revealed=true;preview.authorization=authorization;
-    }
+    preview.revealed=true;
     this.lastFindings=preview.findings;await this.refreshDashboard();return true;
   }
   private reader!: VaultReader;
@@ -227,7 +224,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       new Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
       return;
     }
-    if(!this.settings.billingAccountLinked){const count=scopePaths?.length || this.app.vault.getMarkdownFiles().length;if(count>5){new Notice("Guest repair/report preview supports up to five notes. Select a smaller scope; nothing was scanned or saved.");return;}}
+    if(!this.settings.billingAccountLinked || !this.settings.billingAccessToken){new Notice("Connect your account in plugin settings before scanning or repairing notes.");return;}
     await this.openDashboard();
     this.scanAbort = new AbortController();
     const view = this.getView();
@@ -241,9 +238,9 @@ export default class CairnVaultLinterPlugin extends Plugin {
       this.lastScan = result;
       this.lastErrors = result.errors;
       const fullFindings=applyIgnoredFindings(result.findings, this.settings.ignoredFindings);
-      this.scanPreview={id:jobId(),result,findings:fullFindings,revealed:false};
-      this.lastFindings = fullFindings.slice(0,3);
-      this.lastErrors = result.errors.slice(0,2);
+      this.scanPreview={id:jobId(),result,findings:fullFindings,revealed:true};
+      this.lastFindings = fullFindings;
+      this.lastErrors = result.errors;
       const counts = findingCounts(this.lastFindings);
       this.settings.previousFindingCount = this.settings.lastScanFindingCount;
       this.settings.lastScanAt = new Date().toISOString();
@@ -254,7 +251,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       this.settings.lastFileSignatures = result.signatures;
       if(this.settings.billingAccountLinked) await this.saveData(this.settings);
       await this.refreshDashboard();
-      new Notice(`Limited memory-only preview. Keep Cairn open through sign-in; reveal the exact report. Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
+      new Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
     } catch (error) {
       new Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -308,11 +305,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
       return;
     }
     const previewJobId=jobId();
-    new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected),async()=>{
-      if(this.scanPreview?.revealed && this.scanPreview.authorization){this.repairAuthorizations.set(plans,this.scanPreview.authorization);return true;}
-      const authorization=await reserveNative({app:this.app,settings:this.settings,persistNative:()=>this.persistBillingSettings()},"cairn-vault-linter",previewJobId,JSON.stringify(plans.map(p=>p.before)),JSON.stringify(plans),{files:plans.length,edits:plans.reduce((n,p)=>n+p.proposals.length,0)},true);
-      if(!authorization)return false;this.repairAuthorizations.set(plans,authorization);return true;
-    }).open();
+    new RepairPreviewModal(this.app, plans, (selected) => void this.applyRepairPlans(selected),async()=>true).open();
   }
 
   private async applyRepairPlans(plans: RepairPlan[]): Promise<void> {
@@ -489,7 +482,7 @@ class CairnView extends ItemView {
     this.button(actions, "Current note", () => this.plugin.scanCurrentNote(false));
     this.button(actions, "Current folder", () => this.plugin.scanCurrentFolder(false));
     this.button(actions, "Cancel", () => this.plugin.cancelScan(), false, !!this.plugin.scanAbort);
-    this.button(actions,"Reveal exact full report",()=>void this.plugin.revealReport());
+
     this.button(actions, "Rollback last repair", () => void this.plugin.rollbackLastRepair());
     if (this.progress) {
       const progress = root.createDiv({ cls: "cairn-progress" });
@@ -618,7 +611,7 @@ class RepairPreviewModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "Review exact repairs" });
     contentEl.createEl("p", { text: `${this.plans.length} file(s) will change. No note is written until you choose Apply repairs. A recovery journal is created first.` });
-    const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n").slice(0, 500) });
+    const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n") });
     preview.setAttr("aria-label", "Before and after repair preview");
     preview.style.maxHeight = "420px";
     preview.style.overflow = "auto";
@@ -627,10 +620,7 @@ class RepairPreviewModal extends Modal {
     cancel.onclick = () => this.close();
     const apply = actions.createEl("button", { text: "Apply repairs" });
     apply.addClass("mod-cta");
-    apply.disabled=true;
-    contentEl.createEl("p",{text:"Limited memory-only repair preview. Keep this modal open through sign-in/verification. Full reveal charges once; apply the exact result without a second debit."});
-    const reveal=actions.createEl("button",{text:"Reveal exact full repairs"});
-    reveal.onclick=()=>void this.reveal().then(ok=>{if(ok){preview.setText(this.plans.map(p=>`## ${p.path}\n${diffPreview(p.before,p.after)}`).join("\n\n"));apply.disabled=false;reveal.disabled=true;}});
+    contentEl.createEl("p",{text:"Review the changes before applying. One repair batch uses the account lifetime free allowance first, then purchased credits. Canceling this review uses no credits."});
     apply.onclick = () => { this.close(); this.onApply(this.plans); };
   }
 }
@@ -678,11 +668,11 @@ class CairnSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Review repairs before applying").setDesc("Preview each repair before changing notes. Recommended for unfamiliar vaults.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveData(this.plugin.settings); }));
     if (advanced) new Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => { this.plugin.settings.defaultReportFormat = value as "markdown" | "csv" | "json"; await this.plugin.saveData(this.plugin.settings); }));
     new Setting(containerEl).setName("Billing").setHeading();
-    containerEl.createEl("p",{text:"Guests see a limited report/repair preview kept in memory. Full report or repair reveal consumes one native unit once. Verified accounts receive a lifetime starter allowance of up to five operations; Constance confirms the split. Restore and rollback remain free."});
+    containerEl.createEl("p",{text:"Connect your account to use Cairn. Scans and repair reviews are free; applying repairs uses credits. Connected, verified accounts receive 5 lifetime repair batch credits. Each credit covers up to 5 files and 20 edits; larger batches use more credits. Constance confirms the remaining allowance. Restore and rollback remain free."});
     const billingSummary = containerEl.createEl("p");
     const renderBillingSummary = () => {
       const used = Math.min(5, Math.max(0, this.plugin.settings.freeRepairBatchesUsed));
-      billingSummary.setText(`Lifetime cached: ${used}/5 free repair batches used · Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
+      billingSummary.setText(!this.plugin.settings.billingAccountLinked || !this.plugin.settings.billingAccessToken ? "Create an account or sign in, then Connect to activate your lifetime free allowance and confirm your balance." : `Lifetime cached: ${used}/5 free repair batches used · Purchased balance: ${Math.max(0, this.plugin.settings.purchasedRepairBatches).toLocaleString()} credits`);
     };
     this.plugin.billingSummaryRefresh = renderBillingSummary;
     renderBillingSummary();

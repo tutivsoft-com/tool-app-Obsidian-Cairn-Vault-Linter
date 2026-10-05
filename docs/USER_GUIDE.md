@@ -1,13 +1,8 @@
+# Cairn user guide
 
-## Preview and lifetime allowance
+## Account lifetime allowance
 
-Guests see a bounded preview held only in memory. Keep the originating window open through registration, email verification and sign-in, then retry that exact result without regeneration. Guests cannot save, apply, export or queue useful output. Closing the preview or restarting loses unrevealed guest content.
-
-Repair and full-result operations use Cairn's native Constance quote/reserve/commit flow before protected writes or reveal. Purchased credits remain app-specific. Pack names, prices, descriptions, and quantities come from the configured Constance catalog and live Paddle price records; checkout is enabled only for an exact configured active price.
-
-A bounded repair/report operation covers up to five files and twenty proposed edits. Larger batches use the server-confirmed native cost. Full report or repair reveal consumes once; applying/exporting that same immutable result does not charge again. Source changes block stale repairs; rollback stays free.
-
-Useful local writes follow durable reserve → write → verify → commit. Full reveal commits before showing complete content. Unknown writes retain their journal for status/output reconciliation; they are never blindly refunded or replayed. Billing sends account/install identity, native dimensions and source/result digests, never vault content, image bytes or encryption passwords.
+Five repair batches are available lifetime per account. Each operation uses max(1, ceil(files / 5), ceil(edits / 20)) units. Free units are consumed first and purchased units cover the remainder. Local writes retain durable reserve, write, verify and commit recovery.
 
 ## Current local account and billing behavior
 
@@ -16,8 +11,6 @@ Use **Connect** with your email and password. A new account is registered; an ex
 Constance is the billing authority. Credit units remain app-specific: characters, OCR pages, searches, conversions, repair/protection batches, or captures. Checkout return URLs and cached balances never grant credits. Payment fulfillment comes from the server’s verified Paddle webhook, and balances refresh from authenticated entitlements. Unknown usage or checkout results reuse the persisted operation ID; they must not create a new debit or alternative checkout.
 
 
-
-# Cairn user guide
 
 1. Open **Cairn Vault Linter** from the ribbon or command palette.
 2. Choose **Scan full vault** for a fresh health report. Use **Current note** or **Current folder** for focused review.

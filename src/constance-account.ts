@@ -1,3 +1,4 @@
+import { renderAccountGuidance } from "./account-guidance";
 import { Notice, Setting, requestUrl } from "obsidian";
 
 export const CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
@@ -330,6 +331,7 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
   let password = "";
   const section = containerEl.createDiv({ cls: "constance-account-billing-section" });
   section.createEl("h3", { text: "Account and billing" });
+  renderAccountGuidance(section, {appId:adapter.appId,connected:Boolean(adapter.state.billingAccountLinked && adapter.state.billingAccessToken),defaultAllowance:5,unit:"repair batches",workflow:"Start with 5 repair batch credits over the lifetime of your account. One credit covers up to 5 files and 20 edits; larger batches use proportionately more credits. Free credits are used automatically before purchased credits."});
   const state = adapter.state as ConstanceAccountState & Record<string, unknown>;
   const numericBalances = Object.entries(state)
     .filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number")
@@ -341,7 +343,7 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
       : "Not signed in.";
   section.createEl("p", {
     cls: "constance-account-status",
-    text: numericBalances.length ? `${accountStatus} Balance — ${numericBalances.join("; ")}` : accountStatus,
+    text: adapter.state.billingAccountLinked && adapter.state.billingAccessToken && numericBalances.length ? `${accountStatus} Balance — ${numericBalances.join("; ")}` : accountStatus,
   });
 
   new Setting(section)
@@ -406,3 +408,5 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
     }
   });
 }
+
+export const refreshBillingSession = refreshBillingAccessToken;
