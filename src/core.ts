@@ -1,3 +1,4 @@
+import { diagnostics } from "./diagnostics.ts";
 import type {
   CairnSettings,
   Finding,
@@ -283,6 +284,7 @@ export function scanVault(reader: VaultReader, settings: CairnSettings, scopePat
         scanned++;
         onProgress?.({ phase: "reading", currentPath: file.path, scanned, total: selected.length, findings: 0 });
       } catch (error) {
+diagnostics.failure("core.caught_1", error);
         errors.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
       }
       await Promise.resolve();

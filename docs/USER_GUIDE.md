@@ -1,32 +1,33 @@
-# Cairn user guide
+# Cairn Vault Linter user guide
 
-## Account lifetime allowance
+Current version: **3.4.54**.
 
-Five repair batches are available lifetime per account. Each operation uses max(1, ceil(files / 5), ceil(edits / 20)) units. Free units are consumed first and purchased units cover the remainder. Local writes retain durable reserve, write, verify and commit recovery.
+## Start
 
-## Current local account and billing behavior
+1. Enable the plugin in Obsidian Community plugins.
+2. Open its settings and configure the destination or operation as appropriate. Simple is the default; Advanced is optional.
+3. Connect the account when the chosen operation needs account authorization.
+4. Run Scan full vault, Scan current note or Scan current folder, then inspect the findings in the Cairn view.
 
-Use **Connect** with your email and password. A new account is registered; an existing account is authenticated. New users must follow the emailed verification link and Connect again. Incorrect passwords offer password recovery; passwords are never saved. Paid purchases and free allowances belong to the authenticated account, not a locally entered email or an editable cached balance. Reinstalling does not replenish the same account's allowance.
+Scans and report exports are local and work without a connected billing account. Safe repair actions require account authorization. Optional review is off by default; stale-source checks, durable repair journals, write verification and rollback remain active. An incremental changed-note scan is also available.
 
-Constance is the billing authority. Credit units remain app-specific: characters, OCR pages, searches, conversions, repair/protection batches, or captures. Checkout return URLs and cached balances never grant credits. Payment fulfillment comes from the server’s verified Paddle webhook, and balances refresh from authenticated entitlements. Unknown usage or checkout results reuse the persisted operation ID; they must not create a new debit or alternative checkout.
+## Account and usage
 
+Connect the existing Constance account in settings; registration can require email verification before signing in again. Billing account passwords are sent for authentication and are not persisted. Access/refresh session data and a stable installation identity are saved locally. Account free usage and purchased balance are determined by Constance; cached values and checkout return URLs do not create entitlement. Catalog displays current formatted names, prices, availability and exact price IDs. Unknown usage and checkout results retain their original identities for recovery.
 
+Repair units are max(1, ceil(files / 5), ceil(edits / 20)) per completed repair operation. Native repair writes use account reservation, verification and finalization; unknown results retain the original immutable operation.
 
-1. Open **Cairn Vault Linter** from the ribbon or command palette.
-2. Choose **Scan full vault** for a fresh health report. Use **Current note** or **Current folder** for focused review.
-3. Use **Cancel** if the scan is taking longer than expected. Read errors remain visible under their own group.
-4. Filter findings by type, severity, folder, or ignored state. Each card includes the source path, line, section, target, context, and explanation.
-5. Select **Apply exact repair** or **Apply safe repairs** to run a supported repair directly. Enable **Review repairs before applying** in Settings to inspect before/after text first.
-6. Use **Cairn Vault Linter: Roll back last repair batch** if you need to restore the most recent batch. Files with newer edits are protected and skipped.
-7. Export in the default report format selected in Settings. Enable review there if you want to inspect report contents before Cairn creates the note.
+## Troubleshooting
 
-## Billing and repair credits
+Help is available in settings and through Open documentation. Open plugin settings and Copy full debug log are command-palette fallbacks. Debug logging defaults off for a new installation; failures and full Error objects/stacks still appear in the local developer console. Timed information is enabled by the debug preference. The copyable diagnostic buffer keeps at most 1,000 summarized events and excludes raw error text, stacks, note text, paths and credentials. Full console exceptions can contain whatever the failed operation placed in its error. Logs are not uploaded automatically.
 
+Use the console's plugin-name prefix and version to identify the failing stage. A catchable failure stops its affected action; retry after resolving the underlying problem. Historical build/install results apply to their recorded versions.
 
-In Settings → Billing, enter your billing email and sign in or create an account, review remaining lifetime allowance and the purchased balance, refresh the balance, or open checkout for the live Cairn packs. The installation ID is randomly generated and stored locally for this install; it is not a password or hardware fingerprint. Cairn renews the billing session when possible, persists checkout/spend idempotency state, and polls checkout settlement after opening. No note contents are sent for billing.
+## Removal
 
-Settings let you disable individual rules, manage billing, ignore folders/patterns, include hidden or non-Markdown files, tune the empty-stub definition, and choose the report folder. Reset returns analysis settings to their conservative defaults while preserving the billing identity and balance settings.
+Removing a plugin does not undo earlier file edits or recover an encryption password. Preserve any originals, backups, queues and recovery data you need before removing it. Account purchases remain associated with the account.
 
-## Current workflow defaults
+See plugin settings for implemented commands, settings defaults and privacy controls.
+## MVP selection update — 6 October 2026
 
-Cairn applies safe repairs directly and uses the report format selected in Settings. Repair and export previews are optional and off by default.
+3.4.53: Reviewed recursive file/folder/mixed-selection handling and overlap deduplication. No functional source change was needed in this app.

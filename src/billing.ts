@@ -1,8 +1,14 @@
+import { diagnostics } from "./diagnostics.ts";
 
 
 async function claimAccountFreeUsage(...args: Parameters<typeof import("./constance-account")["claimAccountFreeUsage"]>): ReturnType<typeof import("./constance-account")["claimAccountFreeUsage"]> {
+const diagnosticEnd1 = diagnostics?.start?.("billing.claimAccountFreeUsage") ?? (() => {});
+try {
+
   const module = await import("./constance-account");
-  return module.claimAccountFreeUsage(...args);
+  return await (module.claimAccountFreeUsage(...args));
+
+} catch (diagnosticError1) { diagnostics?.failure?.("billing.claimAccountFreeUsage", diagnosticError1); throw diagnosticError1; } finally { diagnosticEnd1(); }
 }
 
 const BASE_URL = "https://app.tutivsoft.com";
@@ -45,6 +51,7 @@ export interface BillingHttpResponse {
     data?: {
       credits?: {
         balance?: number | string;
+        total_available?: number | string;
       };
       free_usage?: { remaining?: number; used?: number; period_key?: string };
       checkout_url?: string;
@@ -68,12 +75,17 @@ export interface BillingRequest {
 export type BillingRequester = (request: BillingRequest) => Promise<BillingHttpResponse>;
 
 const defaultRequester: BillingRequester = async (request) => {
+const diagnosticEnd2 = diagnostics?.start?.("billing.defaultRequester") ?? (() => {});
+try {
+
   const { requestUrl } = await import("obsidian");
-  return requestUrl(request);
+  return (diagnostics?.request?.("network.billing.request", requestUrl, request) ?? requestUrl(request));
+
+} catch (diagnosticError2) { diagnostics?.failure?.("billing.defaultRequester", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 };
 
 function showNotice(message: string): void {
-  void import("obsidian").then(({ Notice }) => new Notice(message)).catch(() => undefined);
+  void diagnostics.guard("billing.background_1", () => (import("obsidian").then(({ Notice }) => new Notice(message)).catch((rejectedError1) => { diagnostics.failure("billing.rejected_2", rejectedError1); return (undefined); })));
 }
 
 async function requestWithFreshAccessToken(
@@ -81,6 +93,9 @@ async function requestWithFreshAccessToken(
   requester: BillingRequester,
   buildRequest: () => BillingRequest,
 ): Promise<BillingHttpResponse> {
+const diagnosticEnd3 = diagnostics?.start?.("billing.requestWithFreshAccessToken") ?? (() => {});
+try {
+
   let response = await requester(buildRequest());
   if ((response.status === 401 || response.status === 403) && host.settings.billingRefreshToken) {
     const { refreshBillingAccessToken } = await import("./constance-account");
@@ -89,7 +104,9 @@ async function requestWithFreshAccessToken(
       response = await requester(buildRequest());
     }
   }
-  return response;
+  return await (response);
+
+} catch (diagnosticError3) { diagnostics?.failure?.("billing.requestWithFreshAccessToken", diagnosticError3); throw diagnosticError3; } finally { diagnosticEnd3(); }
 }
 
 export function localDateKey(date = new Date()): string {
@@ -125,7 +142,7 @@ export function resetDailyFreeRepairs(settings: BillingSettings, date = new Date
   }
   const freeUsed = Number(settings.freeRepairBatchesUsed);
   const purchased = Number(settings.purchasedRepairBatches);
-  settings.freeRepairBatchesUsed = Number.isFinite(freeUsed) ? Math.max(0, Math.min(3, Math.trunc(freeUsed))) : 0;
+  settings.freeRepairBatchesUsed = Number.isFinite(freeUsed) ? Math.max(0, Math.min(5, Math.trunc(freeUsed))) : 0;
   settings.purchasedRepairBatches = Number.isFinite(purchased) ? Math.max(0, Math.trunc(purchased)) : 0;
 }
 
@@ -140,6 +157,9 @@ function eventId(): string {
 }
 
 export async function fetchBalance(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<number> {
+const diagnosticEnd4 = diagnostics?.start?.("billing.fetchBalance") ?? (() => {});
+try {
+
   const deviceId = ensureDeviceId(host);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) throw new Error("Billing account is not linked");
   const response = await requestWithFreshAccessToken(host, requester, () => ({
@@ -148,12 +168,19 @@ export async function fetchBalance(host: BillingHost, requester: BillingRequeste
     headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false,
   }));
-  if (response.status < 200 || response.status >= 300) throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
+  if (response.status < 200 || response.status >= 300) throw new Error(`Your account could not be updated. Check your connection and try again.`);
+  const paid = response.json?.data?.credits?.total_available ?? response.json?.data?.credits?.balance;
+  if (paid === undefined || paid === null || String(paid).trim() === "" || !Number.isFinite(Number(paid)) || Number(paid) < 0) throw new Error("Your balance could not be updated. Refresh it and try again.");
+  if (!response.json?.data?.free_usage) throw new Error("Your balance could not be updated. Refresh it and try again.");
   if (response.json?.data?.free_usage) {
+    const remaining = response.json.data.free_usage.remaining;
+    if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0) throw new Error("Your balance could not be updated. Refresh it and try again.");
     host.settings.freeRepairDay = localDateKey();
-    host.settings.freeRepairBatchesUsed = Math.max(0, 3 - Number(response.json.data.free_usage.remaining || 0));
+    host.settings.freeRepairBatchesUsed = Math.max(0, 5 - Number(remaining));
   }
-  return Math.max(0, Number(response.json?.data?.credits?.balance) || 0);
+  return Number(paid);
+
+} catch (diagnosticError4) { diagnostics?.failure?.("billing.fetchBalance", diagnosticError4); throw diagnosticError4; } finally { diagnosticEnd4(); }
 }
 
 export type SpendResult =
@@ -162,6 +189,9 @@ export type SpendResult =
   | { kind: "error" };
 
 export async function spendConstanceCredits(host: BillingHost, amount: number, requester: BillingRequester = defaultRequester, stableEventId = eventId()): Promise<SpendResult> {
+const diagnosticEnd5 = diagnostics?.start?.("billing.spendConstanceCredits") ?? (() => {});
+try {
+
   if (!Number.isInteger(amount) || amount !== 1) return { kind: "error" };
   const deviceId = ensureDeviceId(host);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return { kind: "error" };
@@ -175,14 +205,20 @@ export async function spendConstanceCredits(host: BillingHost, amount: number, r
     }));
     if (response.status === 402 || response.status === 404) return { kind: "insufficient" };
     if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    return { kind: "ok", balance: Math.max(0, Number(response.json?.data?.credits?.balance) || 0) };
+    return { kind: "ok", balance: Math.max(0, Number(response.json?.data?.credits?.total_available ?? response.json?.data?.credits?.balance) || 0) };
   } catch (error) {
-    console.warn("Cairn: Constance credit spend failed", error);
+diagnostics.failure("billing.caught_extra_1", error);
+    diagnostics?.legacy?.("warn", "billing.cairn_constance_credit_spend_failed");
     return { kind: "error" };
   }
+
+} catch (diagnosticError5) { diagnostics?.failure?.("billing.spendConstanceCredits", diagnosticError5); throw diagnosticError5; } finally { diagnosticEnd5(); }
 }
 
 export async function syncBalance(host: BillingHost, requester: BillingRequester = defaultRequester, strict = false): Promise<void> {
+const diagnosticEnd6 = diagnostics?.start?.("billing.syncBalance") ?? (() => {});
+try {
+
   const deviceId = ensureDeviceId(host);
   try {
     if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { if (strict) throw new Error("Connect your account before refreshing."); return; }
@@ -206,23 +242,36 @@ export async function syncBalance(host: BillingHost, requester: BillingRequester
     await host.persistBillingSettings();
     host.refreshBillingSummary?.();
   } catch (error) {
-    console.warn("Cairn: Constance balance sync failed", error);
+diagnostics.failure("billing.caught_extra_2", error);
+    diagnostics?.legacy?.("warn", "billing.cairn_constance_balance_sync_failed");
       if (strict) throw error;
   }
+
+} catch (diagnosticError6) { diagnostics?.failure?.("billing.syncBalance", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
 }
 
 export async function initializeBilling(host: BillingHost): Promise<void> {
+const diagnosticEnd7 = diagnostics?.start?.("billing.initializeBilling") ?? (() => {});
+try {
+
   ensureDeviceId(host);
   host.settings.pendingFreeUsageClaims = [...new Set((host.settings.pendingFreeUsageClaims ?? []).filter((id) => typeof id === "string" && id.startsWith("free_")))];
   host.settings.pendingRepairCharges = [...new Set((host.settings.pendingRepairCharges ?? []).filter((id) => typeof id === "string" && id.startsWith("evt_")))];
   host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries(host.settings.pendingCheckoutKeys ?? {}).filter(([pack, key]) => /^[a-zA-Z0-9_-]{1,80}$/.test(pack) && typeof key === "string" && key.startsWith("checkout_")));
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  void syncBalance(host).then(async () => {
+  void diagnostics.guard("billing.background_2", () => (syncBalance(host).then(async () => {
+const diagnosticEnd8 = diagnostics?.start?.("billing.background.9811") ?? (() => {});
+try {
+
     await retryPendingFreeUsageClaims(host);
     await retryPendingRepairCharges(host);
     for (const id of Object.values(host.settings.pendingCheckoutIds ?? {})) host.pollAfterCheckout?.(id);
-  });
+
+} catch (diagnosticError8) { diagnostics?.failure?.("billing.background.9811", diagnosticError8); throw diagnosticError8; } finally { diagnosticEnd8(); }
+})));
+
+} catch (diagnosticError7) { diagnostics?.failure?.("billing.initializeBilling", diagnosticError7); throw diagnosticError7; } finally { diagnosticEnd7(); }
 }
 
 export type RepairCommitResult = { kind: "committed" } | { kind: "pending" } | { kind: "insufficient" };
@@ -235,6 +284,9 @@ export interface RepairReservation {
 }
 
 export async function retryPendingFreeUsageClaims(host: BillingHost): Promise<void> {
+const diagnosticEnd9 = diagnostics?.start?.("billing.retryPendingFreeUsageClaims") ?? (() => {});
+try {
+
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
   const pending = [...(host.settings.pendingFreeUsageClaims ?? [])];
   for (const stableEventId of pending) {
@@ -243,13 +295,18 @@ export async function retryPendingFreeUsageClaims(host: BillingHost): Promise<vo
     host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableEventId);
     if (result.kind === "ok") {
       resetDailyFreeRepairs(host.settings);
-      host.settings.freeRepairBatchesUsed = Math.max(0, 3 - result.remaining);
+      host.settings.freeRepairBatchesUsed = Math.max(0, 5 - result.remaining);
     }
     await host.persistBillingSettings();
   }
+
+} catch (diagnosticError9) { diagnostics?.failure?.("billing.retryPendingFreeUsageClaims", diagnosticError9); throw diagnosticError9; } finally { diagnosticEnd9(); }
 }
 
 export async function retryPendingRepairCharges(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
+const diagnosticEnd10 = diagnostics?.start?.("billing.retryPendingRepairCharges") ?? (() => {});
+try {
+
   const pending = [...(host.settings.pendingRepairCharges ?? [])];
   for (const stableEventId of pending) {
     const result = await spendConstanceCredits(host, 1, requester, stableEventId);
@@ -258,16 +315,26 @@ export async function retryPendingRepairCharges(host: BillingHost, requester: Bi
     host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
     await host.persistBillingSettings();
   }
+
+} catch (diagnosticError10) { diagnostics?.failure?.("billing.retryPendingRepairCharges", diagnosticError10); throw diagnosticError10; } finally { diagnosticEnd10(); }
 }
 
 /** Authorize one approved repair batch. Scans, previews, exports and rollback do not call this. */
 export async function reserveRepairBatch(host: BillingHost, requester: BillingRequester = defaultRequester, source = "", result = "", dimensions = {files:1,edits:1}, stableEventId = `native_${globalThis.crypto.randomUUID()}`): Promise<RepairReservation | null> {
+const diagnosticEnd11 = diagnostics?.start?.("billing.reserveRepairBatch") ?? (() => {});
+try {
+
   if(!host.settings.billingAccessToken||!host.settings.billingAccountLinked)return null;
   const {reserveNative}=await import("./native-operations");
-  return reserveNative({app:(host as any).app,settings:host.settings,persistNative:()=>host.persistBillingSettings()},CAIRN_APP_ID,stableEventId,source,result,dimensions);
+  return await (reserveNative({app:(host as any).app,settings:host.settings,persistNative:()=>host.persistBillingSettings()},CAIRN_APP_ID,stableEventId,source,result,dimensions));
+
+} catch (diagnosticError11) { diagnostics?.failure?.("billing.reserveRepairBatch", diagnosticError11); throw diagnosticError11; } finally { diagnosticEnd11(); }
 }
 
 export async function pollCheckout(host: BillingHost, checkoutId: string, requester: BillingRequester = defaultRequester): Promise<"pending" | "settled" | "failed" | "error"> {
+const diagnosticEnd12 = diagnostics?.start?.("billing.pollCheckout") ?? (() => {});
+try {
+
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return "error";
   const response = await requestWithFreshAccessToken(host, requester, () => ({
     url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
@@ -296,10 +363,15 @@ export async function pollCheckout(host: BillingHost, checkoutId: string, reques
     return settled ? "settled" : "failed";
   }
   return "pending";
+
+} catch (diagnosticError12) { diagnostics?.failure?.("billing.pollCheckout", diagnosticError12); throw diagnosticError12; } finally { diagnosticEnd12(); }
 }
 
 export async function openCheckout(host: BillingHost, pack: CairnPackKey, requester: BillingRequester = defaultRequester, openBrowser = true): Promise<void> {
-  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create a billing account in Cairn settings before buying credits."); return; }
+const diagnosticEnd13 = diagnostics?.start?.("billing.openCheckout") ?? (() => {});
+try {
+
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create an account in Cairn settings before buying credits."); return; }
   const email = host.settings.billingEmail.trim();
   const planCode = CAIRN_PLAN_CODES[pack] || (/^[a-zA-Z0-9_-]{1,80}$/.test(pack) ? pack : "");
   const deviceId = ensureDeviceId(host);
@@ -308,7 +380,7 @@ export async function openCheckout(host: BillingHost, pack: CairnPackKey, reques
     return;
   }
   if (!deviceId || !planCode) {
-    showNotice("Cairn billing has an invalid pack configuration. No checkout was opened.");
+    showNotice("This credit pack is unavailable. No checkout was opened.");
     return;
   }
 
@@ -328,7 +400,8 @@ export async function openCheckout(host: BillingHost, pack: CairnPackKey, reques
       throw: false,
     }));
   } catch (error) {
-    console.warn("Cairn: authenticated checkout request failed", error);
+diagnostics.failure("billing.caught_extra_3", error);
+    diagnostics?.legacy?.("warn", "billing.cairn_authenticated_checkout_request_failed");
     showNotice("Cairn checkout could not be reached. Try again; the same checkout request will be reused safely.");
     return;
   }
@@ -344,14 +417,19 @@ export async function openCheckout(host: BillingHost, pack: CairnPackKey, reques
   }
 
   showNotice("Cairn checkout could not be created. Try again; no new checkout was opened.");
+
+} catch (diagnosticError13) { diagnostics?.failure?.("billing.openCheckout", diagnosticError13); throw diagnosticError13; } finally { diagnosticEnd13(); }
 }
 
 export async function openPriceCheckout(host: BillingHost, priceId: string, requester: BillingRequester = defaultRequester, openBrowser = true): Promise<void> {
-  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create a billing account in Cairn settings before buying credits."); return; }
+const diagnosticEnd14 = diagnostics?.start?.("billing.openPriceCheckout") ?? (() => {});
+try {
+
+  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create an account in Cairn settings before buying credits."); return; }
   const deviceId = ensureDeviceId(host);
   const email = host.settings.billingEmail.trim();
   if (!email || !email.includes("@") || !/^pri_[a-zA-Z0-9_-]{1,80}$/.test(priceId) || !deviceId) {
-    showNotice("Cairn billing could not verify this configured offer. No checkout was opened.");
+    showNotice("This credit pack could not be verified. Refresh prices and retry.");
     return;
   }
   const pending = host.settings.pendingCheckoutKeys ?? {};
@@ -367,7 +445,8 @@ export async function openPriceCheckout(host: BillingHost, priceId: string, requ
       body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, price_id: priceId, quantity: 1 }), throw: false,
     }));
   } catch (error) {
-    console.warn("Cairn: exact-price checkout request failed", error);
+diagnostics.failure("billing.caught_extra_4", error);
+    diagnostics?.legacy?.("warn", "billing.cairn_exact_price_checkout_request_failed");
     showNotice("Cairn checkout could not be reached. Try again; the same checkout request will be reused safely.");
     return;
   }
@@ -382,4 +461,6 @@ export async function openPriceCheckout(host: BillingHost, priceId: string, requ
     return;
   }
   showNotice("Cairn checkout could not be created. Try again; no new checkout was opened.");
+
+} catch (diagnosticError14) { diagnostics?.failure?.("billing.openPriceCheckout", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); }
 }
