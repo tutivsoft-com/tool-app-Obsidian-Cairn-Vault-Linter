@@ -1601,6 +1601,18 @@ async function claimAccountFreeUsage2(...args) {
     diagnosticEnd1();
   }
 }
+function withBillingLock(host, work) {
+  var _a;
+  const previous = (_a = billingLocks.get(host)) != null ? _a : Promise.resolve();
+  const current = previous.catch((error) => {
+    diagnostics.failure("billing.rejected_1", error);
+    return void 0;
+  }).then(work);
+  billingLocks.set(host, current);
+  return current.finally(() => {
+    if (billingLocks.get(host) === current) billingLocks.delete(host);
+  });
+}
 function showNotice(message) {
   void diagnostics.guard("billing.background_1", () => import("obsidian").then(({ Notice: Notice6 }) => new Notice6(message)).catch((rejectedError1) => {
     diagnostics.failure("billing.rejected_2", rejectedError1);
@@ -1728,43 +1740,52 @@ async function spendConstanceCredits(host, amount, requester = defaultRequester,
   }
 }
 async function syncBalance(host, requester = defaultRequester, strict = false) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  var _a, _b, _c, _d, _e;
   const diagnosticEnd6 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing.syncBalance")) != null ? _c : (() => {
   });
   try {
-    const deviceId = ensureDeviceId(host);
-    try {
-      if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
-        if (strict) throw new Error("Connect your account before refreshing.");
-        return;
-      }
-      host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
-      for (const pack of Object.keys((_d = host.settings.pendingCheckoutKeys) != null ? _d : {})) {
-        if (!((_e = host.settings.pendingCheckoutIds) == null ? void 0 : _e[pack])) {
-          if (pack.startsWith("pri_")) await openPriceCheckout(host, pack, requester, false);
-          else await openCheckout(host, pack, requester, false);
+    return await withBillingLock(host, async () => {
+      var _a2, _b2, _c2, _d2, _e2, _f, _g, _h;
+      const deviceId = ensureDeviceId(host);
+      try {
+        if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) {
+          if (strict) throw new Error("Connect your account before refreshing.");
+          return;
         }
-      }
-      let terminalCheckoutChanged = false;
-      for (const [pack, id] of Object.entries((_f = host.settings.pendingCheckoutIds) != null ? _f : {})) {
-        const response = await requestWithFreshAccessToken(host, requester, () => ({ url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(id)}`, method: "GET", headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` }, throw: false }));
-        const data = (_g = response.json) == null ? void 0 : _g.data;
-        const status = String((data == null ? void 0 : data.status) || (data == null ? void 0 : data.payment_status) || "").toLowerCase();
-        if (response.status >= 200 && response.status < 300 && ((data == null ? void 0 : data.settled) === true || ["paid", "completed", "success", "succeeded", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(status))) {
-          delete host.settings.pendingCheckoutKeys[pack];
-          delete host.settings.pendingCheckoutIds[pack];
-          terminalCheckoutChanged = true;
+        host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
+        for (const pack of Object.keys((_a2 = host.settings.pendingCheckoutKeys) != null ? _a2 : {})) {
+          if (!((_b2 = host.settings.pendingCheckoutIds) == null ? void 0 : _b2[pack])) {
+            if (pack.startsWith("pri_")) await openPriceCheckout(host, pack, requester, false);
+            else await openCheckout(host, pack, requester, false);
+          }
         }
+        const terminalCheckouts = [];
+        for (const [pack, id] of Object.entries((_c2 = host.settings.pendingCheckoutIds) != null ? _c2 : {})) {
+          const response = await requestWithFreshAccessToken(host, requester, () => ({ url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(id)}`, method: "GET", headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` }, throw: false }));
+          const data = (_d2 = response.json) == null ? void 0 : _d2.data;
+          const status = String((data == null ? void 0 : data.status) || (data == null ? void 0 : data.payment_status) || "").toLowerCase();
+          if (response.status >= 200 && response.status < 300 && ((data == null ? void 0 : data.settled) === true || ["paid", "completed", "success", "succeeded", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(status))) {
+            terminalCheckouts.push([pack, String(id)]);
+          }
+        }
+        if (terminalCheckouts.length) {
+          host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
+          for (const [pack, id] of terminalCheckouts) {
+            if (((_e2 = host.settings.pendingCheckoutIds) == null ? void 0 : _e2[pack]) !== id) continue;
+            delete host.settings.pendingCheckoutKeys[pack];
+            delete host.settings.pendingCheckoutIds[pack];
+          }
+        }
+        await host.persistBillingSettings();
+        (_f = host.refreshBillingSummary) == null ? void 0 : _f.call(host);
+      } catch (error) {
+        diagnostics.failure("billing.caught_extra_2", error);
+        (_h = (_g = diagnostics) == null ? void 0 : _g.legacy) == null ? void 0 : _h.call(_g, "warn", "billing.cairn_constance_balance_sync_failed");
+        if (strict) throw error;
       }
-      await host.persistBillingSettings();
-      (_h = host.refreshBillingSummary) == null ? void 0 : _h.call(host);
-    } catch (error) {
-      diagnostics.failure("billing.caught_extra_2", error);
-      (_j = (_i = diagnostics) == null ? void 0 : _i.legacy) == null ? void 0 : _j.call(_i, "warn", "billing.cairn_constance_balance_sync_failed");
-      if (strict) throw error;
-    }
+    });
   } catch (diagnosticError6) {
-    (_l = (_k = diagnostics) == null ? void 0 : _k.failure) == null ? void 0 : _l.call(_k, "billing.syncBalance", diagnosticError6);
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "billing.syncBalance", diagnosticError6);
     throw diagnosticError6;
   } finally {
     diagnosticEnd6();
@@ -2018,7 +2039,7 @@ async function openPriceCheckout(host, priceId, requester = defaultRequester, op
     diagnosticEnd14();
   }
 }
-var BASE_URL, CAIRN_APP_ID, CAIRN_PLAN_CODES, defaultRequester;
+var BASE_URL, CAIRN_APP_ID, CAIRN_PLAN_CODES, defaultRequester, billingLocks;
 var init_billing = __esm({
   "publish/src/billing.ts"() {
     "use strict";
@@ -2043,6 +2064,7 @@ var init_billing = __esm({
         diagnosticEnd2();
       }
     };
+    billingLocks = /* @__PURE__ */ new WeakMap();
   }
 });
 
@@ -3943,7 +3965,7 @@ var CairnSettingTab = class extends import_obsidian7.PluginSettingTab {
         diagnosticStage47();
         const diagnosticStage48 = (_X = (_W = (_V = diagnostics) == null ? void 0 : _V.start) == null ? void 0 : _W.call(_V, "settings.render.stage_7")) != null ? _X : (() => {
         });
-        void diagnostics.guard("main.background_48", () => syncBalance(this.plugin).then(renderBillingSummary).catch((rejectedError1) => {
+        void diagnostics.guard("main.background_48", () => (this.plugin.settings.billingAccountLinked && this.plugin.settings.billingAccessToken ? syncBalance(this.plugin, void 0, true) : Promise.resolve()).then(renderBillingSummary).catch((rejectedError1) => {
           diagnostics.failure("main.rejected_2", rejectedError1);
           billingSummary.setText("Balance unavailable. Refresh to retry.");
         }));

@@ -84,6 +84,17 @@ try {
 } catch (diagnosticError2) { diagnostics?.failure?.("billing.defaultRequester", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 };
 
+const billingLocks = new WeakMap<object, Promise<unknown>>();
+
+function withBillingLock<T>(host: BillingHost, work: () => Promise<T>): Promise<T> {
+  const previous = billingLocks.get(host as object) ?? Promise.resolve();
+  const current = previous.catch((error) => { diagnostics.failure("billing.rejected_1", error); return undefined; }).then(work);
+  billingLocks.set(host as object, current);
+  return current.finally(() => {
+    if (billingLocks.get(host as object) === current) billingLocks.delete(host as object);
+  });
+}
+
 function showNotice(message: string): void {
   void diagnostics.guard("billing.background_1", () => (import("obsidian").then(({ Notice }) => new Notice(message)).catch((rejectedError1) => { diagnostics.failure("billing.rejected_2", rejectedError1); return (undefined); })));
 }
@@ -218,7 +229,7 @@ diagnostics.failure("billing.caught_extra_1", error);
 export async function syncBalance(host: BillingHost, requester: BillingRequester = defaultRequester, strict = false): Promise<void> {
 const diagnosticEnd6 = diagnostics?.start?.("billing.syncBalance") ?? (() => {});
 try {
-
+  return await withBillingLock(host, async () => {
   const deviceId = ensureDeviceId(host);
   try {
     if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { if (strict) throw new Error("Connect your account before refreshing."); return; }
@@ -229,14 +240,24 @@ try {
         else await openCheckout(host, pack as CairnPackKey, requester, false);
       }
     }
-    let terminalCheckoutChanged = false;
+    const terminalCheckouts: Array<[string, string]> = [];
     for (const [pack, id] of Object.entries(host.settings.pendingCheckoutIds ?? {})) {
       const response = await requestWithFreshAccessToken(host, requester, () => ({ url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(id)}`, method: "GET", headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` }, throw: false }));
       const data = response.json?.data;
       const status = String(data?.status || data?.payment_status || "").toLowerCase();
       if (response.status >= 200 && response.status < 300 && (data?.settled === true || ["paid", "completed", "success", "succeeded", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(status))) {
-        delete host.settings.pendingCheckoutKeys[pack]; delete host.settings.pendingCheckoutIds![pack];
-        terminalCheckoutChanged = true;
+        terminalCheckouts.push([pack, String(id)]);
+      }
+    }
+    if (terminalCheckouts.length) {
+      // Checkout status can become terminal before its grant appears in the
+      // entitlement snapshot above. Confirm the post-checkout balance before
+      // clearing recovery identities, so transient failures remain retryable.
+      host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
+      for (const [pack, id] of terminalCheckouts) {
+        if (host.settings.pendingCheckoutIds?.[pack] !== id) continue;
+        delete host.settings.pendingCheckoutKeys[pack];
+        delete host.settings.pendingCheckoutIds[pack];
       }
     }
     await host.persistBillingSettings();
@@ -246,7 +267,7 @@ diagnostics.failure("billing.caught_extra_2", error);
     diagnostics?.legacy?.("warn", "billing.cairn_constance_balance_sync_failed");
       if (strict) throw error;
   }
-
+  });
 } catch (diagnosticError6) { diagnostics?.failure?.("billing.syncBalance", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
 }
 

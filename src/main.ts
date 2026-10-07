@@ -938,7 +938,7 @@ diagnostics.failure("main.caught_47", caughtError46); new Notice("Balance could 
 diagnosticStage47();
 
     const diagnosticStage48 = diagnostics?.start?.("settings.render.stage_7") ?? (() => {});
-void diagnostics.guard("main.background_48", () => (syncBalance(this.plugin).then(renderBillingSummary).catch((rejectedError1) => {
+void diagnostics.guard("main.background_48", () => ((this.plugin.settings.billingAccountLinked && this.plugin.settings.billingAccessToken ? syncBalance(this.plugin, undefined, true) : Promise.resolve()).then(renderBillingSummary).catch((rejectedError1) => {
 diagnostics.failure("main.rejected_2", rejectedError1); billingSummary.setText("Balance unavailable. Refresh to retry."); })));
 diagnosticStage48();
 

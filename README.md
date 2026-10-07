@@ -1,29 +1,67 @@
 # Cairn Vault Linter
 
-Scan vault health locally, show findings and apply supported deterministic repairs with recovery safeguards.
+Find vault problems and apply supported repairs with checks and recovery.
 
-Current version: **3.4.54**.
+**Best for:** Obsidian users maintaining interconnected research and knowledge notes.
 
-## First use
+## Top 10 features
 
-Enable the plugin and use its settings page. Simple is the default settings mode; Advanced exposes optional configuration. Run Scan full vault, Scan current note or Scan current folder, then inspect the findings in the Cairn view.
+1. Scan an entire vault.
+2. Scan the current note.
+3. Scan a folder.
+4. Rescan changed notes.
+5. Find broken links and embeds.
+6. Review anchor and malformed-link findings.
+7. Spot duplicate links and aliases.
+8. Export Markdown, CSV or JSON reports.
+9. Apply supported deterministic repairs.
+10. Use repair recovery and rollback.
 
-Scans and report exports are local and work without a connected billing account. Safe repair actions require account authorization. Optional review is off by default; stale-source checks, durable repair journals, write verification and rollback remain active. An incremental changed-note scan is also available.
+## Example workflow
 
-## Account and processing
+**Before:** A growing vault contains dead links and inconsistent references.
 
-Processing is local. This plugin has no AI provider integration. Constance handles account and billing operations.
+**After:** Run a local scan, inspect the report and apply only supported repairs to the findings you select.
 
-Repair units are max(1, ceil(files / 5), ceil(edits / 20)) per completed repair operation. Native repair writes use account reservation, verification and finalization; unknown results retain the original immutable operation.
+## Pricing
 
-Connect the existing Constance account in settings; registration can require email verification before signing in again. Billing account passwords are sent for authentication and are not persisted. Access/refresh session data and a stable installation identity are saved locally. Account free usage and purchased balance are determined by Constance; cached values and checkout return URLs do not create entitlement. Catalog displays current formatted names, prices, availability and exact price IDs. Unknown usage and checkout results retain their original identities for recovery.
+A connected account includes 5 repair units as a one-time lifetime allowance. Previous use counts toward that allowance.
 
-## Diagnostics
+| Pack | USD price | Included units |
+|---|---:|---:|
+| Starter | $2.00 | 50 repair batches |
+| Standard | $4.00 | 150 repair batches |
+| Pro | $8.00 | 450 repair batches |
+| Ultimate | $14.00 | 1,200 repair batches |
 
-Help is available in settings and through Open documentation. Open plugin settings and Copy full debug log are command-palette fallbacks. Debug logging defaults off for a new installation; failures and full Error objects/stacks still appear in the local developer console. Timed information is enabled by the debug preference. The copyable diagnostic buffer keeps at most 1,000 summarized events and excludes raw error text, stacks, note text, paths and credentials. Full console exceptions can contain whatever the failed operation placed in its error. Logs are not uploaded automatically.
+Packs are one-time purchases. Purchased units do not expire. Final tax and local currency are shown at checkout.
 
-## Documentation
+One repair unit covers up to five files and twenty edits; larger repairs use more units.
 
-- [User guide](docs/USER_GUIDE.md)
+## What to know
 
-License terms are in LICENSE.
+Scanning and repair processing are local. Scans and report exports work without a connected account.
+
+---
+
+## Discover Cairn Vault Linter
+
+Whether you need to scan an entire vault or scan the current note, Cairn Vault Linter provides a focused workflow for Obsidian users maintaining interconnected research and knowledge notes.
+
+### Common questions
+
+**What can I use it for?**
+
+You can scan an entire vault, rescan changed notes or find broken links and embeds.
+
+**How do I get started?**
+
+Enable the plugin in Obsidian, open its settings and choose the action that fits your note. Connect your account for metered actions; the settings page shows your remaining allowance and available packs.
+
+### Search description
+
+Find vault problems and apply supported repairs with checks and recovery. Designed for Obsidian users maintaining interconnected research and knowledge notes.
+
+### Related topics
+
+Obsidian vault linter, broken link checker, Markdown link audit, vault repair reports.
