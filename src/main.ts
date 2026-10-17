@@ -1,3 +1,4 @@
+import { initializeMatomo } from "./matomo-plugin";
 import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
 import { diagnostics } from "./diagnostics.ts";
 import { reserveNative, renderNativePacks, jobId, digest, recoverNative, type NativeReservation } from "./native-operations";
@@ -113,6 +114,7 @@ try {
   private reader!: VaultReader;
 
   async onload(): Promise<void> {
+    initializeMatomo(this);
 let diagnosticStartupEnd: () => void = () => {};
 
 const diagnosticEnd2 = diagnostics?.start?.("main.onload") ?? (() => {});
