@@ -68,6 +68,6 @@ Obsidian vault linter, broken link checker, Markdown link audit, vault repair re
 
 ## Release
 
-Version 3.4.61 is prepared for manual validation and publication.
+Version 3.4.61 was published on 17 October 2026. Its final Obsidian Community audit completed successfully. [Release assets](https://github.com/tutivsoft-com/tool-app-Obsidian-Cairn-Vault-Linter/releases/tag/3.4.61).
 
 Basic app usage events are sent to https://atcdn.cyou without note contents. Account and purchase operations use Constance.
