@@ -2412,10 +2412,8 @@ function resolveNote(path, source, byPath, byBasename, byAlias) {
 function resolveAnyFile(path, source, files) {
   const raw = path.trim().replace(/^\//, "");
   if (!raw) return void 0;
-  const direct = files.get(normalizePath(raw));
-  if (direct) return direct;
-  const relative = raw.startsWith("./") ? normalizePath(`${source.path.split("/").slice(0, -1).join("/")}/${raw.slice(2)}`) : "";
-  return relative ? files.get(relative) : void 0;
+  const relative = normalizePath(`${source.path.split("/").slice(0, -1).join("/")}/${raw}`);
+  return path.startsWith("/") ? files.get(normalizePath(raw)) : files.get(relative) || files.get(normalizePath(raw));
 }
 function cleanMeaningfulText(content) {
   const withoutFrontmatter = content.replace(/^(?:---|\+\+\+)\r?\n[\s\S]*?\r?\n(?:---|\+\+\+)\r?\n/, "");
@@ -2432,7 +2430,6 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
     const scanFiles = allFiles.filter((file) => settings.scanNonMarkdownFiles || file.extension.toLowerCase() === "md");
     const selected = (scopePaths == null ? void 0 : scopePaths.length) ? scanFiles.filter((file) => scopePaths.includes(file.path)) : scanFiles;
     const selectedPaths = new Set(selected.map((file) => file.path));
-    const explicitScope = (scopePaths == null ? void 0 : scopePaths.length) ? new Set(scopePaths) : null;
     const errors = [];
     const signatures = {};
     allFiles.forEach((file) => signatures[file.path] = fileSignature(file));
@@ -2443,12 +2440,8 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
     const changedOnly = incremental && Object.keys(settings.lastFileSignatures).length > 0;
     let scanned = 0;
     onProgress == null ? void 0 : onProgress({ phase: "indexing", currentPath: "", scanned: 0, total: selected.length, findings: 0 });
-    const pathsRead = /* @__PURE__ */ new Set();
     for (const file of noteFiles) {
       if (signal == null ? void 0 : signal.aborted) return { findings: [], errors, filesScanned: scanned, durationMs: Date.now() - started, cancelled: true, signatures };
-      const shouldRead = !changedOnly || (explicitScope == null ? void 0 : explicitScope.has(file.path)) === true || settings.lastFileSignatures[file.path] !== fileSignature(file);
-      if (!shouldRead) continue;
-      pathsRead.add(file.path);
       try {
         const content = await reader.read(file);
         const parsed = parseHeadingsAndBlocks(content);
@@ -2457,7 +2450,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         const basenameKey = normalizeText(pathWithoutExtension(file.basename || file.path.split("/").pop() || ""));
         byBasename.set(basenameKey, [...byBasename.get(basenameKey) || [], index]);
         index.aliases.forEach((alias) => byAlias.set(normalizeText(alias), [...byAlias.get(normalizeText(alias)) || [], index]));
-        scanned++;
+        if (selectedPaths.has(file.path)) scanned++;
         onProgress == null ? void 0 : onProgress({ phase: "reading", currentPath: file.path, scanned, total: selected.length, findings: 0 });
       } catch (error) {
         diagnostics.failure("core.caught_1", error);
@@ -2466,7 +2459,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
       await Promise.resolve();
     }
     const readableFiles = new Map(allFiles.map((file) => [normalizePath(file.path), file]));
-    const findings = changedOnly ? previousFindings.filter((finding) => !pathsRead.has(finding.sourcePath)) : [];
+    const findings = changedOnly ? previousFindings.filter((finding) => !selectedPaths.has(finding.sourcePath) && signatures[finding.sourcePath] !== void 0) : [];
     const incoming = /* @__PURE__ */ new Map();
     byPath.forEach((note) => note.outgoing.forEach((link) => {
       const target = resolveNote(link.path, note.file, byPath, byBasename, byAlias);
@@ -2510,14 +2503,22 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         const context = surroundingText(note.content, link.line);
         if (malformed && settings.checks["malformed-link"]) findings.push(malformedLinkFinding(note.file.path, note.content, link.line, link.raw, "This link target contains unsupported or malformed characters and cannot be resolved safely."));
         if (EXTERNAL_TARGET.test(link.path)) return;
-        const resolution = link.kind === "wiki" ? resolveNote(link.path, note.file, byPath, byBasename, byAlias) || (link.embed ? resolveAnyFile(link.path, note.file, readableFiles) : void 0) : !link.path && link.fragmentKind === "heading" ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(link.path, note.file, readableFiles);
-        const targetNote = link.kind === "wiki" && resolution && "headings" in resolution ? resolution : void 0;
+        let decodedPath = link.path;
+        let decodedFragment = link.fragment;
+        if (link.kind === "markdown") {
+          try {
+            decodedPath = decodeURIComponent(link.path);
+            decodedFragment = decodeURIComponent(link.fragment);
+          } catch {}
+        }
+        const resolution = link.kind === "wiki" ? resolveNote(link.path, note.file, byPath, byBasename, byAlias) || (link.embed ? resolveAnyFile(link.path, note.file, readableFiles) : void 0) : !decodedPath && link.fragmentKind !== "none" ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(decodedPath, note.file, readableFiles);
+        const targetNote = resolution ? "headings" in resolution ? resolution : byPath.get(normalizePath(resolution.path)) : void 0;
         if (!resolution) {
           if (link.embed && settings.checks["broken-embed"]) findings.push(makeFinding("broken-embed", "high", note.file.path, link.line, link.section, link.target, "This embedded note or local attachment does not exist in the vault.", false, context));
           else if (link.kind === "wiki" && /\s/.test(link.path) && settings.checks["missing-alias"]) findings.push(makeFinding("missing-alias", "medium", note.file.path, link.line, link.section, link.target, "No note exposes this text as an alias, and no matching note path was found.", false, context));
           else if (settings.checks[link.kind === "wiki" ? "broken-wikilink" : "broken-markdown-link"]) findings.push(makeFinding(link.kind === "wiki" ? "broken-wikilink" : "broken-markdown-link", "high", note.file.path, link.line, link.section, link.target, link.kind === "wiki" ? "The wikilink target does not resolve to a note." : "The Markdown link target does not resolve to a vault file.", false, context));
-        } else if (link.fragmentKind !== "none") {
-          const fragment = normalizeText(link.fragment);
+        } else if (link.fragmentKind !== "none" && targetNote) {
+          const fragment = normalizeText(decodedFragment);
           if (link.fragmentKind === "block") {
             const exists = targetNote == null ? void 0 : targetNote.blocks.some((block) => block.id === fragment);
             if (!exists && settings.checks["missing-block-id"]) findings.push(makeFinding("missing-block-id", "high", note.file.path, link.line, link.section, link.target, `Block ID ^${link.fragment} does not exist in the target note.`, false, context));
