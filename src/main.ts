@@ -898,7 +898,7 @@ diagnosticStage41();
 containerEl.createEl("p",{text:"Scan and review repairs locally without an account. Connect your account to apply repairs. Verified accounts receive five free repair credits on their account. Each credit covers up to five files and 20 edits; larger batches use more credits. Restore and rollback are free."});
 diagnosticStage42();
 
-    const billingSummary = containerEl.createEl("p");
+    const billingSummary = containerEl.createEl("p", {cls:"cairn-billing-summary",attr:{role:"status","aria-live":"polite"}});
     const renderBillingSummary = () => {
 const diagnosticAction62 = () => {
 
