@@ -1,73 +1,29 @@
 # Cairn Vault Linter
 
-Find vault problems and apply supported repairs with checks and recovery.
+Inspect vault hygiene and apply supported repairs with recovery records.
 
-**Best for:** Obsidian users maintaining interconnected research and knowledge notes.
+## Use
 
-## Top 10 features
+Install or update the plugin through Obsidian Community plugins, enable it, and open its settings. Use the existing plugin commands for the selected note, text or files. Existing preferences and local recovery records are retained.
 
-1. Scan an entire vault.
-2. Scan the current note.
-3. Scan a folder.
-4. Rescan changed notes.
-5. Find broken links and embeds.
-6. Review anchor and malformed-link findings.
-7. Spot duplicate links and aliases.
-8. Export Markdown, CSV or JSON reports.
-9. Apply supported deterministic repairs.
-10. Use repair recovery and rollback.
+## Account and billing
 
-## Example workflow
+Connect your Constance account in plugin settings. If you create an account, confirm the email link and then connect again. Authentication, current offers, free allowance, purchased balance and payment confirmation use the Constance v2 service at https://app.tutivsoft.com.
 
-**Before:** A growing vault contains dead links and inconsistent references.
+Current paid names, descriptions, prices, currencies and included units come from the payment provider through Constance. Refresh the displayed offers before buying. If current pricing cannot be verified, buying is unavailable. Only canonical payment fulfillment grants credits. A completed purchase stays saved until the refreshed balance is saved and acknowledged. Pending requests retain their original identity after a retry or restart. Use Check payment or Cancel current purchase in the billing section when needed.
 
-**After:** Run a local scan, inspect the report and apply only supported repairs to the findings you select.
+New purchases use Paddle and USD. Existing historical purchases retain their original provider. No payment credentials are bundled in the plugin.
 
-## Pricing
+## Privacy and recovery
 
-A connected account includes 5 repair units as a one-time lifetime allowance. Previous use counts toward that allowance.
+Account requests send authentication and billing information to Constance. Passwords are not saved. Session credentials and recovery state are kept in local plugin settings. Billing requests do not contain note or image contents. The main processing workflow stays local. Basic app usage events use the existing analytics service without note contents. Diagnostic logs stay local unless you copy and share them.
 
-| Pack | USD price | Included units |
-|---|---:|---:|
-| Starter | $2.00 | 50 repair batches |
-| Standard | $4.00 | 150 repair batches |
-| Pro | $8.00 | 450 repair batches |
-| Ultimate | $14.00 | 1,200 repair batches |
-
-Packs are one-time purchases. Purchased units do not expire. Final tax and local currency are shown at checkout.
-
-One repair unit covers up to five files and twenty edits; larger repairs use more units.
-
-## What to know
-
-Scanning and repair processing are local. Scans and report exports work without a connected account.
-
----
-
-## Discover Cairn Vault Linter
-
-Whether you need to scan an entire vault or scan the current note, Cairn Vault Linter provides a focused workflow for Obsidian users maintaining interconnected research and knowledge notes.
-
-### Common questions
-
-**What can I use it for?**
-
-You can scan an entire vault, rescan changed notes or find broken links and embeds.
-
-**How do I get started?**
-
-Enable the plugin in Obsidian, open its settings and choose the action that fits your note. Connect your account for metered actions; the settings page shows your remaining allowance and available packs.
-
-### Search description
-
-Find vault problems and apply supported repairs with checks and recovery. Designed for Obsidian users maintaining interconnected research and knowledge notes.
-
-### Related topics
-
-Obsidian vault linter, broken link checker, Markdown link audit, vault repair reports.
+Uncertain older billing records are retained and are never replayed as new v2 charges. Connect the original account and contact support if an earlier operation needs recovery.
 
 ## Release
 
-Version 3.4.61 was published on 17 October 2026. Its final Obsidian Community audit completed successfully. [Release assets](https://github.com/tutivsoft-com/tool-app-Obsidian-Cairn-Vault-Linter/releases/tag/3.4.61).
+Version 3.4.64 is prepared for the manual Community publication checks. A source push alone does not publish a plugin update. Installable updates use a matching version tag and the three assets main.js, manifest.json and styles.css.
 
-Basic app usage events are sent to https://atcdn.cyou without note contents. Account and purchase operations use Constance.
+## Support
+
+Use the plugin's Help or Open documentation command and the support links in its manifest. For a billing problem, retain the original purchase or operation identity and use the account portal. Do not share passwords or session tokens.

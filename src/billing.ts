@@ -1,3 +1,7 @@
+import {refreshBillingSession} from "./constance-account";
+import {syncEntitlements} from "./constance-v2";
+import {openAccountCheckout} from "./billing-checkout";
+import {resumeAccountCheckout} from "./billing-checkout";
 import { diagnostics } from "./diagnostics.ts";
 
 
@@ -164,7 +168,7 @@ export function hasWritableRepairPlans(plans: readonly { before: string; after: 
 function eventId(): string {
   const bytes = new Uint8Array(12);
   window.crypto.getRandomValues(bytes);
-  return `evt_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return `v2consume_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export async function fetchBalance(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<number> {
@@ -174,7 +178,7 @@ try {
   const deviceId = ensureDeviceId(host);
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) throw new Error("Billing account is not linked");
   const response = await requestWithFreshAccessToken(host, requester, () => ({
-    url: `${BASE_URL}/api/v1/billing/entitlements/me?${new URLSearchParams({ app_id: CAIRN_APP_ID, installation_id: deviceId }).toString()}`,
+    url: `${BASE_URL}/api/v2/billing/entitlements/me?${new URLSearchParams({ app_id: CAIRN_APP_ID, installation_id: deviceId }).toString()}`,
     method: "GET",
     headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false,
@@ -208,7 +212,7 @@ try {
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return { kind: "error" };
   try {
     const response = await requestWithFreshAccessToken(host, requester, () => ({
-      url: `${BASE_URL}/api/v1/billing/credits/spend`,
+      url: `${BASE_URL}/api/v2/billing/credits/spend`,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}` },
       body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, amount, event_id: stableEventId }),
@@ -227,48 +231,8 @@ diagnostics.failure("billing.caught_extra_1", error);
 }
 
 export async function syncBalance(host: BillingHost, requester: BillingRequester = defaultRequester, strict = false): Promise<void> {
-const diagnosticEnd6 = diagnostics?.start?.("billing.syncBalance") ?? (() => {});
-try {
-  return await withBillingLock(host, async () => {
-  const deviceId = ensureDeviceId(host);
-  try {
-    if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { if (strict) throw new Error("Connect your account before refreshing."); return; }
-    host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
-    for (const pack of Object.keys(host.settings.pendingCheckoutKeys ?? {})) {
-      if (!host.settings.pendingCheckoutIds?.[pack]) {
-        if (pack.startsWith("pri_")) await openPriceCheckout(host, pack, requester, false);
-        else await openCheckout(host, pack as CairnPackKey, requester, false);
-      }
-    }
-    const terminalCheckouts: Array<[string, string]> = [];
-    for (const [pack, id] of Object.entries(host.settings.pendingCheckoutIds ?? {})) {
-      const response = await requestWithFreshAccessToken(host, requester, () => ({ url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(id)}`, method: "GET", headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` }, throw: false }));
-      const data = response.json?.data;
-      const status = String(data?.status || data?.payment_status || "").toLowerCase();
-      if (response.status >= 200 && response.status < 300 && (data?.settled === true || ["paid", "completed", "success", "succeeded", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(status))) {
-        terminalCheckouts.push([pack, String(id)]);
-      }
-    }
-    if (terminalCheckouts.length) {
-      // Checkout status can become terminal before its grant appears in the
-      // entitlement snapshot above. Confirm the post-checkout balance before
-      // clearing recovery identities, so transient failures remain retryable.
-      host.settings.purchasedRepairBatches = await fetchBalance(host, requester);
-      for (const [pack, id] of terminalCheckouts) {
-        if (host.settings.pendingCheckoutIds?.[pack] !== id) continue;
-        delete host.settings.pendingCheckoutKeys[pack];
-        delete host.settings.pendingCheckoutIds[pack];
-      }
-    }
-    await host.persistBillingSettings();
-    host.refreshBillingSummary?.();
-  } catch (error) {
-diagnostics.failure("billing.caught_extra_2", error);
-    diagnostics?.legacy?.("warn", "billing.cairn_constance_balance_sync_failed");
-      if (strict) throw error;
-  }
-  });
-} catch (diagnosticError6) { diagnostics?.failure?.("billing.syncBalance", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
+await syncEntitlements(host.settings,()=>host.persistBillingSettings());
+(host as any).refreshBillingSummary?.();
 }
 
 export async function initializeBilling(host: BillingHost): Promise<void> {
@@ -305,51 +269,16 @@ export interface RepairReservation {
 }
 
 export async function retryPendingFreeUsageClaims(host: BillingHost): Promise<void> {
-const diagnosticEnd9 = diagnostics?.start?.("billing.retryPendingFreeUsageClaims") ?? (() => {});
-try {
-
-  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return;
-  const pending = [...(host.settings.pendingFreeUsageClaims ?? [])];
-  for (const stableEventId of pending) {
-    const result = await claimAccountFreeUsage(host.settings, CAIRN_APP_ID, host.settings.constanceDeviceId, stableEventId, 1, () => host.persistBillingSettings());
-    if (result.kind === "error" || result.kind === "auth-required") break;
-    host.settings.pendingFreeUsageClaims = host.settings.pendingFreeUsageClaims.filter((id) => id !== stableEventId);
-    if (result.kind === "ok") {
-      resetDailyFreeRepairs(host.settings);
-      host.settings.freeRepairBatchesUsed = Math.max(0, 5 - result.remaining);
-    }
-    await host.persistBillingSettings();
-  }
-
-} catch (diagnosticError9) { diagnostics?.failure?.("billing.retryPendingFreeUsageClaims", diagnosticError9); throw diagnosticError9; } finally { diagnosticEnd9(); }
+return;
 }
 
 export async function retryPendingRepairCharges(host: BillingHost, requester: BillingRequester = defaultRequester): Promise<void> {
-const diagnosticEnd10 = diagnostics?.start?.("billing.retryPendingRepairCharges") ?? (() => {});
-try {
-
-  const pending = [...(host.settings.pendingRepairCharges ?? [])];
-  for (const stableEventId of pending) {
-    const result = await spendConstanceCredits(host, 1, requester, stableEventId);
-    if (result.kind === "error") break;
-    host.settings.pendingRepairCharges = host.settings.pendingRepairCharges.filter((id) => id !== stableEventId);
-    host.settings.purchasedRepairBatches = result.kind === "insufficient" ? 0 : result.balance;
-    await host.persistBillingSettings();
-  }
-
-} catch (diagnosticError10) { diagnostics?.failure?.("billing.retryPendingRepairCharges", diagnosticError10); throw diagnosticError10; } finally { diagnosticEnd10(); }
+return;
 }
 
 /** Authorize one approved repair batch. Scans, previews, exports and rollback do not call this. */
-export async function reserveRepairBatch(host: BillingHost, requester: BillingRequester = defaultRequester, source = "", result = "", dimensions = {files:1,edits:1}, stableEventId = `native_${globalThis.crypto.randomUUID()}`): Promise<RepairReservation | null> {
-const diagnosticEnd11 = diagnostics?.start?.("billing.reserveRepairBatch") ?? (() => {});
-try {
-
-  if(!host.settings.billingAccessToken||!host.settings.billingAccountLinked)return null;
-  const {reserveNative}=await import("./native-operations");
-  return await (reserveNative({app:(host as any).app,settings:host.settings,persistNative:()=>host.persistBillingSettings()},CAIRN_APP_ID,stableEventId,source,result,dimensions));
-
-} catch (diagnosticError11) { diagnostics?.failure?.("billing.reserveRepairBatch", diagnosticError11); throw diagnosticError11; } finally { diagnosticEnd11(); }
+export async function reserveRepairBatch(host: BillingHost, requester: BillingRequester = defaultRequester, source = "", result = "", dimensions = {files:1,edits:1}, stableEventId = `v2native_${globalThis.crypto.randomUUID()}`): Promise<RepairReservation | null> {
+const {reserveNative,jobId}=await import("./native-operations");return reserveNative({app:(host as any).app,settings:host.settings as any,persistNative:()=>host.persistBillingSettings()},CAIRN_APP_ID,stableEventId,source,result,dimensions);
 }
 
 export async function pollCheckout(host: BillingHost, checkoutId: string, requester: BillingRequester = defaultRequester): Promise<"pending" | "settled" | "failed" | "error"> {
@@ -358,7 +287,7 @@ try {
 
   if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) return "error";
   const response = await requestWithFreshAccessToken(host, requester, () => ({
-    url: `${BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
+    url: `${BASE_URL}/api/v2/billing/checkouts/${encodeURIComponent(checkoutId)}`,
     method: "GET",
     headers: { Authorization: `Bearer ${host.settings.billingAccessToken}` },
     throw: false,
@@ -389,99 +318,9 @@ try {
 }
 
 export async function openCheckout(host: BillingHost, pack: CairnPackKey, requester: BillingRequester = defaultRequester, openBrowser = true): Promise<void> {
-const diagnosticEnd13 = diagnostics?.start?.("billing.openCheckout") ?? (() => {});
-try {
-
-  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create an account in Cairn settings before buying credits."); return; }
-  const email = host.settings.billingEmail.trim();
-  const planCode = CAIRN_PLAN_CODES[pack] || (/^[a-zA-Z0-9_-]{1,80}$/.test(pack) ? pack : "");
-  const deviceId = ensureDeviceId(host);
-  if (!email || !email.includes("@")) {
-    showNotice("Enter a valid billing email in Cairn settings first.");
-    return;
-  }
-  if (!deviceId || !planCode) {
-    showNotice("This credit pack is unavailable. No checkout was opened.");
-    return;
-  }
-
-  const pendingCheckoutKeys = host.settings.pendingCheckoutKeys ?? {};
-  if (Object.keys(pendingCheckoutKeys).some(key => key !== pack)) { showNotice("Another purchase is pending. Its balance will refresh automatically."); return; }
-  const idempotencyKey = pendingCheckoutKeys[pack] || `checkout_${eventId()}`;
-  host.settings.pendingCheckoutKeys = { ...pendingCheckoutKeys, [pack]: idempotencyKey };
-  await host.persistBillingSettings();
-
-  let response: BillingHttpResponse;
-  try {
-    response = await requestWithFreshAccessToken(host, requester, () => ({
-      url: `${BASE_URL}/api/v1/billing/checkout`,
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}`, "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, plan_code: planCode, installation_id: deviceId, quantity: 1, coupon_code: null }),
-      throw: false,
-    }));
-  } catch (error) {
-diagnostics.failure("billing.caught_extra_3", error);
-    diagnostics?.legacy?.("warn", "billing.cairn_authenticated_checkout_request_failed");
-    showNotice("Cairn checkout could not be reached. Try again; the same checkout request will be reused safely.");
-    return;
-  }
-
-  const checkoutUrl = response.json?.data?.checkout_url;
-  if (response.status >= 200 && response.status < 300 && typeof checkoutUrl === "string" && checkoutUrl) {
-    const checkoutId = response.json?.data?.checkout_id;
-    if (checkoutId !== undefined && checkoutId !== null) host.settings.pendingCheckoutIds = { ...(host.settings.pendingCheckoutIds ?? {}), [pack]: String(checkoutId) };
-    await host.persistBillingSettings();
-    if (checkoutId !== undefined && checkoutId !== null) host.pollAfterCheckout?.(String(checkoutId));
-    if (openBrowser) window.open(checkoutUrl, "_blank", "noopener");
-    return;
-  }
-
-  showNotice("Cairn checkout could not be created. Try again; no new checkout was opened.");
-
-} catch (diagnosticError13) { diagnostics?.failure?.("billing.openCheckout", diagnosticError13); throw diagnosticError13; } finally { diagnosticEnd13(); }
+await openAccountCheckout({state:host.settings,appId:"cairn-vault-linter",installationId:host.settings.constanceDeviceId,persist:()=>host.persistBillingSettings(),syncBalance:async()=>{await syncEntitlements(host.settings,()=>host.persistBillingSettings());(host as any).refreshBillingSummary?.();},refreshSession:()=>refreshBillingSession(host.settings,()=>host.persistBillingSettings())}, typeof pack === "string" && pack.includes("010") ? "onetime-standard" : "onetime");
 }
 
 export async function openPriceCheckout(host: BillingHost, priceId: string, requester: BillingRequester = defaultRequester, openBrowser = true): Promise<void> {
-const diagnosticEnd14 = diagnostics?.start?.("billing.openPriceCheckout") ?? (() => {});
-try {
-
-  if (!host.settings.billingAccessToken || !host.settings.billingAccountLinked) { showNotice("Sign in or create an account in Cairn settings before buying credits."); return; }
-  const deviceId = ensureDeviceId(host);
-  const email = host.settings.billingEmail.trim();
-  if (!email || !email.includes("@") || !/^pri_[a-zA-Z0-9_-]{1,80}$/.test(priceId) || !deviceId) {
-    showNotice("This credit pack could not be verified. Refresh prices and retry.");
-    return;
-  }
-  const pending = host.settings.pendingCheckoutKeys ?? {};
-  if (Object.keys(pending).some(key => key !== priceId)) { showNotice("Another purchase is pending. Its balance will refresh automatically."); return; }
-  const idempotencyKey = pending[priceId] || `checkout_${eventId()}`;
-  host.settings.pendingCheckoutKeys = { ...pending, [priceId]: idempotencyKey };
-  await host.persistBillingSettings();
-  let response: BillingHttpResponse;
-  try {
-    response = await requestWithFreshAccessToken(host, requester, () => ({
-      url: `${BASE_URL}/api/v1/billing/checkout-price`, method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.settings.billingAccessToken}`, "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ app_id: CAIRN_APP_ID, installation_id: deviceId, price_id: priceId, quantity: 1 }), throw: false,
-    }));
-  } catch (error) {
-diagnostics.failure("billing.caught_extra_4", error);
-    diagnostics?.legacy?.("warn", "billing.cairn_exact_price_checkout_request_failed");
-    showNotice("Cairn checkout could not be reached. Try again; the same checkout request will be reused safely.");
-    return;
-  }
-  const checkout = response.json?.data;
-  if (response.status >= 200 && response.status < 300 && checkout?.checkout_id != null) {
-    const id = String(checkout.checkout_id);
-    host.settings.pendingCheckoutIds = { ...(host.settings.pendingCheckoutIds ?? {}), [priceId]: id };
-    await host.persistBillingSettings();
-    host.pollAfterCheckout?.(id);
-    if (openBrowser && typeof checkout.checkout_url === "string" && checkout.checkout_url) window.open(checkout.checkout_url, "_blank", "noopener");
-    else if (openBrowser) showNotice("Checkout is still being confirmed. Its status will refresh automatically.");
-    return;
-  }
-  showNotice("Cairn checkout could not be created. Try again; no new checkout was opened.");
-
-} catch (diagnosticError14) { diagnostics?.failure?.("billing.openPriceCheckout", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); }
+await openAccountCheckout({state:host.settings,appId:"cairn-vault-linter",installationId:host.settings.constanceDeviceId,persist:()=>host.persistBillingSettings(),syncBalance:async()=>{await syncEntitlements(host.settings,()=>host.persistBillingSettings());(host as any).refreshBillingSummary?.();},refreshSession:()=>refreshBillingSession(host.settings,()=>host.persistBillingSettings())},priceId);
 }
