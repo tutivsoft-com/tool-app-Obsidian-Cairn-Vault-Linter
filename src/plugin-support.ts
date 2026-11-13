@@ -1,4 +1,3 @@
-import { diagnosticError, recordPluginDiagnostic } from './windows-diagnostics';
 import { diagnostics } from "./diagnostics.ts";
 import { App, Modal, Notice, Plugin, Setting } from "obsidian";
 import type { Command } from "obsidian";
@@ -38,7 +37,7 @@ function isError(value: unknown): value is Error {
 }
 
 function safeDetail(value: unknown): string {
-  if (isError(value)) return JSON.stringify(diagnosticError(value));
+  if (isError(value)) { const status = (value as Error & { httpStatus?: number }).httpStatus; return JSON.stringify({ errorType: safeString(value.name || "Error"), ...(typeof status === "number" && Number.isFinite(status) ? { httpStatus: status } : {}) }); }
   if (!value || typeof value !== "object" || Array.isArray(value)) return "[detail omitted]";
 
   const safe: Record<string, string | number | boolean | null> = {};
@@ -309,10 +308,7 @@ return diagnostics.guard("plugin-support.event_19", () => {
     return diagnostics.guard(stage, () => diagnostics.run(stage, action), false as T);
   }
 
-  breadcrumb(event: string): void { recordPluginDiagnostic(this.plugin, event); }
-
   private record(level: LogEntry["level"], event: string, detail?: unknown): void {
-    recordPluginDiagnostic(this.plugin, event, level === "error" ? detail : undefined);
     const admittedEnd = event.endsWith(".end") && typeof (detail as { span?: unknown } | undefined)?.span === "number";
     if (level === "info" && !this.debugEnabled() && !admittedEnd) return;
     const now = Date.now();

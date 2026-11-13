@@ -5,7 +5,7 @@ const keySettings: Record<string, string[]> = {
   "garda-handwriting-text-ocr": ["AI connection"],
   "torbert-text-ai-obsidian": ["Review before applying", "AI classification folders", "Custom prompt presets", "OpenRouter API key"],
   "kairo-quick-capture": ["Destination mode", "Automatic delivery"],
-  "cairn-vault-linter": ["Expand repair preview", "Ignored folders"],
+  "cairn-vault-linter": ["Review repairs before applying", "Ignored folders"],
   "tundra-frontmatter-wrangler": ["Existing AI properties", "Review before applying"],
   "meridian-timeline": ["Date properties"],
   "aegis-note-locker": ["Session password", "Session timeout"],

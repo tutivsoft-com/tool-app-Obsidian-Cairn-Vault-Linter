@@ -245,7 +245,7 @@ try {
   host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries(host.settings.pendingCheckoutKeys ?? {}).filter(([pack, key]) => /^[a-zA-Z0-9_-]{1,80}$/.test(pack) && typeof key === "string" && key.startsWith("checkout_")));
   resetDailyFreeRepairs(host.settings);
   await host.persistBillingSettings();
-  if (host.settings.billingAccountLinked) void diagnostics.guard("billing.background_2", () => (syncBalance(host).then(async () => {
+  void diagnostics.guard("billing.background_2", () => (syncBalance(host).then(async () => {
 const diagnosticEnd8 = diagnostics?.start?.("billing.background.9811") ?? (() => {});
 try {
 
@@ -264,7 +264,6 @@ export type RepairCommitResult = { kind: "committed" } | { kind: "pending" } | {
 export interface RepairReservation {
   source: "free" | "purchased";
   markWriting?(evidence?:import("./native-operations").WriteEvidence[]): Promise<boolean>;
-  completeWrites?(unwrittenPaths:string[]): Promise<void>;
   commit(): Promise<RepairCommitResult>;
   rollback(): Promise<void>;
 }

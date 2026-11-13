@@ -66,22 +66,17 @@ var require_matomo_client = __commonJS({
           this.lastScreen = "";
           this.busy = false;
           this.initializing = null;
-          this.pending = [];
-          this.saving = Promise.resolve();
-          this.retry = null;
+          this.transportPending = false;
         }
         get configured() {
           return this.enabled && Number.isInteger(this.config.siteId) && this.config.siteId > 1 && /^[a-z][a-z0-9_]{0,63}$/.test(this.config.product);
-        }
-        get queueKey() {
-          return "matomo.pending." + this.config.product;
         }
         initialize() {
           if (!this.initializing) this.initializing = this.initializeOnce();
           return this.initializing;
         }
         async initializeOnce() {
-          var _a, _b, _c;
+          var _a, _b;
           if (!this.configured) return;
           try {
             const key = "matomo.v1." + this.config.product;
@@ -92,78 +87,48 @@ var require_matomo_client = __commonJS({
               this.visitor = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
               await ((_b = this.storage) == null ? void 0 : _b.set(key, this.visitor));
             }
-            try {
-              const saved = JSON.parse(await ((_c = this.storage) == null ? void 0 : _c.get(this.queueKey)) || "[]");
-              if (Array.isArray(saved)) this.pending = saved.filter((s) => typeof s === "string" && s.length < 8192).slice(0, 64);
-            } catch (_) {
-            }
-            void this.flush();
           } catch (_) {
-            this.visitor = "";
-            this.initializing = null;
+            this.enabled = false;
           }
         }
-        async screen(name) {
-          if (!this.configured || !(this.config.screens || ["home", "settings", "login", "onboarding"]).includes(name)) return;
-          await this.initialize();
-          if (name === this.lastScreen) return;
-          if (this.enqueue({ action_name: name }, name)) this.lastScreen = name;
+        screen(name) {
+          if (!this.configured || !this.visitor) return Promise.resolve();
+          if (!(this.config.screens || ["home", "settings", "login", "onboarding"]).includes(name) || name === this.lastScreen) return Promise.resolve();
+          this.lastScreen = name;
+          return this.track({ action_name: name }, name);
         }
-        async event(category, action, name, value) {
-          if (!Object.prototype.hasOwnProperty.call(actions, category) || !actions[category].includes(action) || !(this.config.features || []).includes(name)) return;
-          if (value !== void 0 && (!Number.isFinite(value) || value < 0 || value > 864e5)) return;
-          await this.initialize();
-          this.enqueue({ e_c: category, e_a: action, e_n: name, ...value === void 0 ? {} : { e_v: String(value) } }, "feature");
+        event(category, action, name, value) {
+          if (!Object.prototype.hasOwnProperty.call(actions, category) || !actions[category].includes(action) || !(this.config.features || []).includes(name)) return Promise.resolve();
+          if (value !== void 0 && (!Number.isFinite(value) || value < 0 || value > 864e5)) return Promise.resolve();
+          return this.track({ e_c: category, e_a: action, e_n: name, ...value === void 0 ? {} : { e_v: String(value) } }, "feature");
         }
-        enqueue(fields, screen) {
-          if (!this.configured || !this.visitor || this.pending.length >= 64) return false;
-          this.pending.push(new URLSearchParams({ idsite: String(this.config.siteId), rec: "1", apiv: "1", send_image: "0", _id: this.visitor, rand: String(Date.now()) + Math.random(), url: "https://tutivsoft.com/analytics/apps/" + this.config.product + "/" + (this.config.platform || "web") + "/" + screen, ...fields }).toString());
-          void this.save();
-          void this.flush();
-          return true;
-        }
-        save() {
-          const snapshot = JSON.stringify(this.pending);
-          this.saving = this.saving.then(() => {
-            var _a;
-            return (_a = this.storage) == null ? void 0 : _a.set(this.queueKey, snapshot);
-          }).catch(() => {
-          });
-          return this.saving;
-        }
-        dispose() {
-          this.enabled = false;
-          clearTimeout(this.retry);
-        }
-        async flush() {
-          if (!this.configured || this.busy || !this.visitor) return;
+        async track(fields, screen) {
+          if (!this.configured || !this.visitor || this.busy || this.transportPending) return;
           this.busy = true;
-          clearTimeout(this.retry);
+          const body = new URLSearchParams({ idsite: String(this.config.siteId), rec: "1", apiv: "1", _id: this.visitor, url: "https://tutivsoft.com/analytics/apps/" + this.config.product + "/" + (this.config.platform || "web") + "/" + screen, ...fields }).toString();
+          const controller = new AbortController();
+          let timer;
           try {
-            await this.saving;
-            while (this.configured && this.pending.length) {
-              const body = this.pending[0];
-              const controller = new AbortController();
-              let timer;
-              try {
-                const response = this.send ? await this.send(body) : await (async () => {
-                  timer = setTimeout(() => controller.abort(), 5e3);
-                  return fetch("https://atcdn.cyou/matomo.php", { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" }, credentials: "omit", referrerPolicy: "no-referrer", redirect: "error", signal: controller.signal });
-                })();
-                if (response && typeof response.status === "number" && (response.status < 200 || response.status >= 300)) break;
-                this.pending.shift();
-                await this.save();
-              } catch (_) {
-                break;
-              } finally {
-                clearTimeout(timer);
-              }
-            }
+            let request;
+            if (this.send) {
+              this.transportPending = true;
+              request = Promise.resolve().then(() => this.send(body));
+              request = request.then(() => {
+                this.transportPending = false;
+              }, () => {
+                this.transportPending = false;
+              });
+            } else request = fetch("https://atcdn.cyou/matomo.php", { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" }, credentials: "omit", referrerPolicy: "no-referrer", redirect: "error", signal: controller.signal });
+            await Promise.race([request, new Promise((resolve) => {
+              timer = setTimeout(() => {
+                controller.abort();
+                resolve();
+              }, 5e3);
+            })]);
+          } catch (_) {
           } finally {
+            clearTimeout(timer);
             this.busy = false;
-            if (this.configured && this.pending.length) this.retry = setTimeout(() => {
-              void this.flush();
-            }, 3e4);
           }
         }
       }
@@ -213,9 +178,7 @@ var init_diagnostics = __esm({
         }
       },
       start(stage) {
-        var _a;
         try {
-          (_a = sink == null ? void 0 : sink.breadcrumb) == null ? void 0 : _a.call(sink, stage + ".start");
           if (!sink || !enabled()) return noop;
           const started = performance.now();
           const previous = repetitions.get(stage);
@@ -342,7 +305,7 @@ function legacyPending(host) {
 }
 async function send(host, path, body) {
   const originalOwner = owner(host);
-  const request = () => !host.state.billingAccountLinked || owner(host) !== originalOwner ? Promise.resolve({ status: 401 }) : (0, import_obsidian4.requestUrl)({
+  const request = () => !host.state.billingAccountLinked || owner(host) !== originalOwner ? Promise.resolve({ status: 401 }) : (0, import_obsidian3.requestUrl)({
     url: `${CONSTANCE_API}${path}`,
     method: body ? "POST" : "GET",
     throw: false,
@@ -375,7 +338,7 @@ function prepareAccountCheckout(host) {
   const steps = (_c = panel == null ? void 0 : panel.createEl) == null ? void 0 : _c.call(panel, "p", { text: "1. Open checkout / 2. Complete payment / 3. Verify access", cls: "checkout-progress-steps" });
   let message = "Please wait while we prepare your secure payment link. Checkout will open automatically. You can cancel this purchase below.";
   let checkButton, cancelButton;
-  const feedback = panel ? new import_obsidian4.Setting(panel).setName("Preparing your payment") : void 0;
+  const feedback = panel ? new import_obsidian3.Setting(panel).setName("Preparing your payment") : void 0;
   const refreshMessage = () => {
     const seconds = Math.max(0, Math.floor((Date.now() - preparation.started) / 1e3));
     feedback == null ? void 0 : feedback.setDesc(`${message} Elapsed: ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}.`);
@@ -566,7 +529,7 @@ async function recoverAccountCheckout(host, allowOpen = true, createOnly = false
     if (current() && rejected.includes((_c = (_b = response.json) == null ? void 0 : _b.error) == null ? void 0 : _c.code)) {
       host.state.pendingAccountCheckout = null;
       await host.persist();
-      new import_obsidian4.Notice("This offer is unavailable. Refresh the plans and choose an available offer.");
+      new import_obsidian3.Notice("This offer is unavailable. Refresh the plans and choose an available offer.");
       return;
     }
     if (!current() || response.status !== 202 || !validCheckout(data2, host, pending)) return;
@@ -604,16 +567,16 @@ function validCheckout(data, host, pending) {
 async function openAccountCheckout(host, plan) {
   if (running.has(host.state)) return running.get(host.state);
   if (!host.state.billingAccountLinked) {
-    new import_obsidian4.Notice("Connect your account first.");
+    new import_obsidian3.Notice("Connect your account first.");
     return;
   }
   if (legacyPending(host)) {
-    new import_obsidian4.Notice("An older purchase is unresolved. Connect its account and contact support before another purchase.");
+    new import_obsidian3.Notice("An older purchase is unresolved. Connect its account and contact support before another purchase.");
     return;
   }
   let saved = host.state.pendingAccountCheckout;
   if (saved && saved.email !== owner(host)) {
-    new import_obsidian4.Notice("Connect the account that owns the pending purchase first.");
+    new import_obsidian3.Notice("Connect the account that owns the pending purchase first.");
     return;
   }
   const operation = (async () => {
@@ -625,7 +588,7 @@ async function openAccountCheckout(host, plan) {
       }
       saved = host.state.pendingAccountCheckout;
       if (saved) {
-        new import_obsidian4.Notice("A purchase is still pending. Use Cancel current purchase, then wait for confirmation before choosing another pack.");
+        new import_obsidian3.Notice("A purchase is still pending. Use Cancel current purchase, then wait for confirmation before choosing another pack.");
         resumeAccountCheckout(host);
         return;
       }
@@ -637,7 +600,7 @@ async function openAccountCheckout(host, plan) {
       await recoverAccountCheckout(host, true, true);
     } catch (error) {
       diagnostics.failure("billing-checkout.open", error);
-      new import_obsidian4.Notice("Checkout is still being confirmed. Retry the same purchase to recover it safely.");
+      new import_obsidian3.Notice("Checkout is still being confirmed. Retry the same purchase to recover it safely.");
     } finally {
       resumeAccountCheckout(host);
     }
@@ -654,11 +617,11 @@ async function cancelAccountCheckout(host) {
     await running.get(host.state);
   }
   if (!host.state.billingAccountLinked) {
-    new import_obsidian4.Notice("Connect your account first.");
+    new import_obsidian3.Notice("Connect your account first.");
     return;
   }
   if (legacyPending(host)) {
-    new import_obsidian4.Notice("An older purchase needs account support before it can be cancelled.");
+    new import_obsidian3.Notice("An older purchase needs account support before it can be cancelled.");
     return;
   }
   const operation = (async () => {
@@ -666,23 +629,23 @@ async function cancelAccountCheckout(host) {
       await recoverAccountCheckout(host, false);
       const pending = host.state.pendingAccountCheckout;
       if (!pending) {
-        new import_obsidian4.Notice("Purchase status updated. You can choose another pack.");
+        new import_obsidian3.Notice("Purchase status updated. You can choose another pack.");
         return;
       }
       if (!pending.checkoutId || pending.email !== owner(host)) {
-        new import_obsidian4.Notice("Purchase confirmation is pending. Check status again shortly.");
+        new import_obsidian3.Notice("Purchase confirmation is pending. Check status again shortly.");
         return;
       }
       const response = await send(host, `/checkouts/${encodeURIComponent(pending.checkoutId)}/cancel`, {});
       if (response.status !== 200) {
-        new import_obsidian4.Notice("Checkout could not be cancelled yet. Check purchase status before trying again.");
+        new import_obsidian3.Notice("Checkout could not be cancelled yet. Check purchase status before trying again.");
         return;
       }
       await recoverAccountCheckout(host, false);
-      new import_obsidian4.Notice(host.state.pendingAccountCheckout ? "Cancellation requested. Constance will confirm it before another purchase can start." : "Purchase status updated. You can choose another pack.");
+      new import_obsidian3.Notice(host.state.pendingAccountCheckout ? "Cancellation requested. Constance will confirm it before another purchase can start." : "Purchase status updated. You can choose another pack.");
     } catch (error) {
       diagnostics.failure("billing-checkout.cancel", error);
-      new import_obsidian4.Notice("Cancellation is still being confirmed. Your purchase is retained; check status again shortly.");
+      new import_obsidian3.Notice("Cancellation is still being confirmed. Your purchase is retained; check status again shortly.");
     } finally {
       resumeAccountCheckout(host);
     }
@@ -694,12 +657,12 @@ async function cancelAccountCheckout(host) {
     running.delete(host.state);
   }
 }
-var import_obsidian4, running, timers, owner, preparations, openAccountCheckoutByPrice;
+var import_obsidian3, running, timers, owner, preparations, openAccountCheckoutByPrice;
 var init_billing_checkout = __esm({
   "publish/src/billing-checkout.ts"() {
     "use strict";
     init_diagnostics();
-    import_obsidian4 = require("obsidian");
+    import_obsidian3 = require("obsidian");
     init_constance_v2();
     running = /* @__PURE__ */ new WeakMap();
     timers = /* @__PURE__ */ new WeakMap();
@@ -900,7 +863,7 @@ var init_settings_layout = __esm({
       "garda-handwriting-text-ocr": ["AI connection"],
       "torbert-text-ai-obsidian": ["Review before applying", "AI classification folders", "Custom prompt presets", "OpenRouter API key"],
       "kairo-quick-capture": ["Destination mode", "Automatic delivery"],
-      "cairn-vault-linter": ["Expand repair preview", "Ignored folders"],
+      "cairn-vault-linter": ["Review repairs before applying", "Ignored folders"],
       "tundra-frontmatter-wrangler": ["Existing AI properties", "Review before applying"],
       "meridian-timeline": ["Date properties"],
       "aegis-note-locker": ["Session password", "Session timeout"],
@@ -936,11 +899,11 @@ function renderAccountGuidance(section, host) {
     details.createEl("p", { text: "Connect your account to load your free and purchased credits. Free credits are used first, then purchased credits. Your balance stays with your account after reinstalling. Current quantities and prices are shown in Account." });
     void diagnostics.guard("account-guidance.background_1", () => {
       var _a2, _b, _c;
-      return ((_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b.call(_a2, "network.account-guidance.renderAccountGuidance", import_obsidian5.requestUrl, { url: `https://app.tutivsoft.com/api/v2/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })) != null ? _c : (0, import_obsidian5.requestUrl)({ url: `https://app.tutivsoft.com/api/v2/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })).then((response) => {
+      return ((_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b.call(_a2, "network.account-guidance.renderAccountGuidance", import_obsidian4.requestUrl, { url: `https://app.tutivsoft.com/api/v2/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })) != null ? _c : (0, import_obsidian4.requestUrl)({ url: `https://app.tutivsoft.com/api/v2/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })).then((response) => {
         var _a3, _b2;
         const p = response.status === 200 ? (_b2 = (_a3 = response.json) == null ? void 0 : _a3.data) == null ? void 0 : _b2.account_free_usage : null;
         if (!p || !Number.isFinite(p.allowance) || p.allowance < 0) return;
-        const unit = host.appId === "cairn-vault-linter" && p.unit === "repair_batches" ? "repair credits" : String(p.unit).replace(/_/g, " ");
+        const unit = String(p.unit).replace(/_/g, " ");
         label2.setText(p.enabled ? `Free credits: ${Number(p.allowance).toLocaleString()} ${unit} per account. Connect to check what remains.` : "Connect to check your account access and available credits.");
       }).catch((rejectedError1) => {
         diagnostics.failure("account-guidance.rejected_2", rejectedError1);
@@ -949,12 +912,12 @@ function renderAccountGuidance(section, host) {
   };
   return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("account-guidance.renderAccountGuidance", diagnosticAction1) : diagnosticAction1();
 }
-var import_obsidian5;
+var import_obsidian4;
 var init_account_guidance = __esm({
   "publish/src/account-guidance.ts"() {
     "use strict";
     init_diagnostics();
-    import_obsidian5 = require("obsidian");
+    import_obsidian4 = require("obsidian");
   }
 });
 
@@ -1041,7 +1004,7 @@ async function linkAuthenticatedInstallation(adapter, token) {
 async function authenticate(mode, email, password, appId) {
   var _a, _b, _c, _d, _e, _f, _g, _h;
   const action = mode === "connect" ? "login" : mode;
-  const response = await (0, import_obsidian6.requestUrl)({
+  const response = await (0, import_obsidian5.requestUrl)({
     url: `${CONSTANCE_API}/auth/${action}`,
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1076,7 +1039,7 @@ async function linkInstallation(adapter, token) {
     state.billingV2InstallationOwner = owner3;
   }
   if (!state.billingV2InstallationId || !state.billingV2InstallationToken) {
-    const created = await (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/public/installations`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_id: adapter.appId }), throw: false });
+    const created = await (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_API}/public/installations`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_id: adapter.appId }), throw: false });
     const data = (_b = created.json) == null ? void 0 : _b.data;
     if (created.status !== 201 || !(data == null ? void 0 : data.installation_id) || !(data == null ? void 0 : data.installation_token)) throw new ConstanceAccountError(errorDetail(created, "Could not register this installation."), created.status);
     if (!current()) throw new Error("Account connection changed.");
@@ -1087,7 +1050,7 @@ async function linkInstallation(adapter, token) {
   }
   await adapter.persist();
   if (!current()) throw new Error("Account connection changed.");
-  const response = await (0, import_obsidian6.requestUrl)({
+  const response = await (0, import_obsidian5.requestUrl)({
     url: `${CONSTANCE_API}/billing/installations/link`,
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -1163,13 +1126,13 @@ async function verifyBillingAccount(adapter, verificationToken) {
   try {
     const token = verificationToken.trim();
     if (!token) throw new Error("Enter the verification code from your email.");
-    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.verifyBillingAccount", import_obsidian6.requestUrl, {
+    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.verifyBillingAccount", import_obsidian5.requestUrl, {
       url: `${CONSTANCE_API}/auth/verify`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
       throw: false
-    })) != null ? _f : (0, import_obsidian6.requestUrl)({
+    })) != null ? _f : (0, import_obsidian5.requestUrl)({
       url: `${CONSTANCE_API}/auth/verify`,
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1183,7 +1146,7 @@ async function verifyBillingAccount(adapter, verificationToken) {
     clearBillingSession(adapter.state);
     adapter.state.billingRegistrationPending = false;
     await adapter.persist();
-    new import_obsidian6.Notice("Email verified. Connect again to sign in.");
+    new import_obsidian5.Notice("Email verified. Connect again to sign in.");
   } catch (diagnosticError6) {
     (_j = (_i = diagnostics) == null ? void 0 : _i.failure) == null ? void 0 : _j.call(_i, "constance-account.verifyBillingAccount", diagnosticError6);
     throw diagnosticError6;
@@ -1215,7 +1178,7 @@ async function refreshBillingSession(state, persist = async () => {
       try {
         let response;
         try {
-          response = await ((_f = (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.request) == null ? void 0 : _e2.call(_d2, "network.constance-account.refreshBillingSession", import_obsidian6.requestUrl, { url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false })) != null ? _f : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false }));
+          response = await ((_f = (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.request) == null ? void 0 : _e2.call(_d2, "network.constance-account.refreshBillingSession", import_obsidian5.requestUrl, { url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false })) != null ? _f : (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false }));
         } catch (caughtError2) {
           diagnostics.failure("constance-account.caught_3", caughtError2);
           return false;
@@ -1274,7 +1237,7 @@ async function requestAuthenticatedBilling(state, persist, options = void 0) {
     }
     const send2 = () => {
       var _a2, _b2, _c2;
-      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.requestAuthenticatedBilling", import_obsidian6.requestUrl, { ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false })) != null ? _c2 : (0, import_obsidian6.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
+      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.requestAuthenticatedBilling", import_obsidian5.requestUrl, { ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false })) != null ? _c2 : (0, import_obsidian5.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
     };
     if (!state.billingAccessToken) return { status: 401 };
     let response = await send2();
@@ -1382,7 +1345,7 @@ function addBillingAccountSettings(containerEl, adapter) {
   const state = adapter.state;
   const accountStatus = adapter.state.billingAccountLinked ? `Signed in as ${adapter.state.billingEmail || "your account"}` : state.billingRegistrationPending ? `Registered as ${adapter.state.billingEmail} but not signed in. Check your email, click the confirmation link, then sign in here.` : "Not signed in.";
   if (!adapter.state.billingAccountLinked) {
-    new import_obsidian6.Setting(section).setName("Email").setDesc("Use the email associated with your account and purchases.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
+    new import_obsidian5.Setting(section).setName("Email").setDesc("Use the email associated with your account and purchases.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
       return diagnostics.guard("constance-account.control_4", async () => {
         var _a, _b, _c, _d, _e;
         const diagnosticEnd15 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "control.email.onChange")) != null ? _c : (() => {
@@ -1402,7 +1365,7 @@ function addBillingAccountSettings(containerEl, adapter) {
         }
       });
     }));
-    new import_obsidian6.Setting(section).setName("Password").setDesc("Used to sign in and never saved by the plugin. New accounts require at least 12 characters.").addText((text) => {
+    new import_obsidian5.Setting(section).setName("Password").setDesc("Used to sign in and never saved by the plugin. New accounts require at least 12 characters.").addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.maxLength = 256;
       text.setPlaceholder("Password").onChange((value) => {
@@ -1416,7 +1379,7 @@ function addBillingAccountSettings(containerEl, adapter) {
       });
     });
   }
-  new import_obsidian6.Setting(section).setName("Account").setDesc(accountStatus).addButton((button) => {
+  new import_obsidian5.Setting(section).setName("Account").setDesc(accountStatus).addButton((button) => {
     if (adapter.state.billingAccountLinked) {
       button.buttonEl.remove();
       return;
@@ -1434,11 +1397,11 @@ function addBillingAccountSettings(containerEl, adapter) {
               return (_a2 = adapter.refresh) == null ? void 0 : _a2.call(adapter);
             });
             password = "";
-            new import_obsidian6.Notice(adapter.state.billingRegistrationPending ? "Check your email and follow the verification link, then Connect again." : `Connected as ${adapter.state.billingEmail}.`);
+            new import_obsidian5.Notice(adapter.state.billingRegistrationPending ? "Check your email and follow the verification link, then Connect again." : `Connected as ${adapter.state.billingEmail}.`);
             (_d = adapter.refresh) == null ? void 0 : _d.call(adapter);
           } catch (error) {
             diagnostics.failure("constance-account.caught_7", error);
-            new import_obsidian6.Notice(error instanceof Error ? error.message : "Account connection failed. Try again.");
+            new import_obsidian5.Notice(error instanceof Error ? error.message : "Account connection failed. Try again.");
             (_e = adapter.refresh) == null ? void 0 : _e.call(adapter);
           } finally {
             button.setDisabled(adapter.state.billingAccountLinked || pendingConnections.has(adapter.state));
@@ -1469,11 +1432,11 @@ function addBillingAccountSettings(containerEl, adapter) {
           await adapter.persist();
           if (refreshToken) void diagnostics.guard("constance-account.background_9", () => {
             var _a2, _b2, _c2;
-            return ((_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.addBillingAccountSettings", import_obsidian6.requestUrl, { url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })) != null ? _c2 : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })).catch((rejectedError1) => {
+            return ((_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.addBillingAccountSettings", import_obsidian5.requestUrl, { url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })) != null ? _c2 : (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })).catch((rejectedError1) => {
               diagnostics.failure("constance-account.rejected_2", rejectedError1);
             });
           });
-          new import_obsidian6.Notice("Signed out.");
+          new import_obsidian5.Notice("Signed out.");
           (_d = adapter.refresh) == null ? void 0 : _d.call(adapter);
         } catch (diagnosticError18) {
           (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "control.account.onClick", diagnosticError18);
@@ -1486,11 +1449,11 @@ function addBillingAccountSettings(containerEl, adapter) {
   });
   if (!adapter.state.billingAccountLinked) {
     for (const [purpose, name] of [["reset", "Forgot password?"], ["verify", "Resend verification email"]]) {
-      new import_obsidian6.Setting(section).setName(name).addButton((button) => button.setButtonText("Send email").onClick(async () => {
+      new import_obsidian5.Setting(section).setName(name).addButton((button) => button.setButtonText("Send email").onClick(async () => {
         try {
-          const response = await (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/recovery`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: adapter.state.billingEmail.trim(), purpose }), throw: false });
+          const response = await (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_API}/auth/recovery`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: adapter.state.billingEmail.trim(), purpose }), throw: false });
           if (response.status !== 202) throw new Error("Email could not be requested. Try again.");
-          new import_obsidian6.Notice("If eligible, an email has been queued. Check your inbox and spam.");
+          new import_obsidian5.Notice("If eligible, an email has been queued. Check your inbox and spam.");
         } catch (error) {
           diagnostics.failure("constance-account.recovery", error);
         }
@@ -1549,7 +1512,7 @@ async function registerBillingAccount(adapter, password) {
 }
 function registerBillingPersister(_state, _persist) {
 }
-var import_obsidian6, pendingConnections, CONSTANCE_ACCOUNT_BASE_URL, ConstanceAccountError, refreshes, authenticatedBillingRequest, verifyBillingAccountRegistration, ensureBillingAccessToken, refreshBillingAccessToken;
+var import_obsidian5, pendingConnections, CONSTANCE_ACCOUNT_BASE_URL, ConstanceAccountError, refreshes, authenticatedBillingRequest, verifyBillingAccountRegistration, ensureBillingAccessToken, refreshBillingAccessToken;
 var init_constance_account = __esm({
   "publish/src/constance-account.ts"() {
     "use strict";
@@ -1558,7 +1521,7 @@ var init_constance_account = __esm({
     init_diagnostics();
     init_account_guidance();
     init_billing_checkout();
-    import_obsidian6 = require("obsidian");
+    import_obsidian5 = require("obsidian");
     pendingConnections = /* @__PURE__ */ new WeakSet();
     CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
     ConstanceAccountError = class extends Error {
@@ -1605,7 +1568,7 @@ function addLivePacks(root, host) {
   let renderOffers = () => {
   };
   const section = root.createDiv({ cls: "ui-billing-packs" });
-  new import_obsidian7.Setting(section).setName("Currency").addDropdown((dropdown) => {
+  new import_obsidian6.Setting(section).setName("Currency").addDropdown((dropdown) => {
     dropdown.addOption("USD", "USD");
     dropdown.setValue("USD").onChange((value) => {
       selectedCurrency = value;
@@ -1619,7 +1582,7 @@ function addLivePacks(root, host) {
   void diagnostics.guard("billing-catalog.load", async () => {
     var _a;
     try {
-      const response = await (0, import_obsidian7.requestUrl)({ url: `${CONSTANCE_API}/billing/offers?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false });
+      const response = await (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/billing/offers?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false });
       if (response.status !== 200) throw new Error("Prices unavailable");
       const offers = joinPublicPacks((_a = response.json) == null ? void 0 : _a.data, host.appId);
       if (!offers.length) throw new Error("Prices unavailable");
@@ -1628,8 +1591,7 @@ function addLivePacks(root, host) {
         const matching = offers.filter((offer) => offer.pack.currency === selectedCurrency);
         status.setText(matching.length ? "Applicable taxes are calculated at checkout." : "No packs available in this currency.");
         for (const { pack, priceId, units, unit, amount, available } of matching.sort((a, b) => a.units - b.units)) {
-          const display = (value) => host.appId === "cairn-vault-linter" ? value.replace(/repair batch(es)?/gi, (_match, plural) => `repair credit${plural ? "s" : ""}`) : value;
-          new import_obsidian7.Setting(packs).setName(display(pack.name || "Credit offer")).setDesc(`${pack.description ? display(pack.description).replace(/[.!?]$/, "") + ". " : ""}Applicable taxes are calculated at checkout.`).addButton((button) => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available || !host.state.billingAccountLinked).onClick(async () => {
+          new import_obsidian6.Setting(packs).setName(pack.name || "Credit offer").setDesc(`${pack.description ? pack.description.replace(/[.!?]$/, "") + ". " : ""}Applicable taxes are calculated at checkout.`).addButton((button) => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available || !host.state.billingAccountLinked).onClick(async () => {
             button.setDisabled(true);
             try {
               await openAccountCheckout(checkoutHost, priceId);
@@ -1647,12 +1609,12 @@ function addLivePacks(root, host) {
     }
   });
 }
-var import_obsidian7;
+var import_obsidian6;
 var init_billing_catalog = __esm({
   "publish/src/billing-catalog.ts"() {
     "use strict";
     init_diagnostics();
-    import_obsidian7 = require("obsidian");
+    import_obsidian6 = require("obsidian");
     init_constance_account();
     init_billing_checkout();
     init_constance_v2();
@@ -1693,7 +1655,7 @@ async function api(host, path, body) {
     url: CONSTANCE_API + path,
     method: body === void 0 ? "GET" : "POST",
     throw: false,
-    ...body === void 0 ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    ...body === void 0 ? {} : { body: JSON.stringify(body) }
   });
   if (response.status < 200 || response.status >= 300 || !((_a = response.json) == null ? void 0 : _a.data)) throw new Error("Your account could not be verified. Your saved operation will be retried safely.");
   return response.json.data;
@@ -1719,38 +1681,33 @@ async function settle(host, journal, action) {
   validate(row, journal);
   return row;
 }
-async function writeOutcome(host, journal) {
-  var _a, _b;
-  if (!((_a = journal.evidence) == null ? void 0 : _a.length)) return "unknown";
-  let applied = false;
+async function writesMatch(host, journal) {
+  var _a;
+  if (!((_a = journal.evidence) == null ? void 0 : _a.length)) return false;
   for (const evidence of journal.evidence) {
-    if ((_b = journal.unwritten_paths) == null ? void 0 : _b.includes(evidence.path)) continue;
     try {
       const adapter = host.app.vault.adapter;
       const value = evidence.binary ? await adapter.readBinary(evidence.path) : await adapter.read(evidence.path);
-      const hash = await digest(value);
-      if (hash === evidence.after || evidence.marker && typeof value === "string" && value.includes(evidence.marker)) applied = true;
-      else if (!evidence.before || hash !== evidence.before) return "unknown";
-    } catch (e) {
-      return "unknown";
+      if (evidence.marker && typeof value === "string" && value.includes(evidence.marker)) continue;
+      if (await digest(value) !== evidence.after) return false;
+    } catch (_) {
+      return false;
     }
   }
-  return applied ? "some" : "none";
+  return true;
 }
 async function recoverNative(host) {
   var _a;
-  if (!host.settings.billingAccountLinked || host.nativeWriting) return;
+  if (!host.settings.billingAccountLinked) return;
   for (const journal of host.settings.operationJournal || []) {
     if (journal.protocol !== "v2" || journal.account !== owner2(host) || !pendingStates.includes(journal.state)) continue;
     try {
       const row = journal.operation_id ? await api(host, "/billing/operations/" + encodeURIComponent(journal.operation_id)) : await reserve(host, journal);
       validate(row, journal);
       if (row.state === "committed" || row.state === "denied") journal.state = row.state;
-      else if (row.state === "released") journal.state = ((_a = journal.evidence) == null ? void 0 : _a.length) && await writeOutcome(host, journal) !== "none" ? "uncertain_released" : "released";
-      else if (journal.state === "verified" || journal.state === "writing" && await writeOutcome(host, journal) === "some") {
+      else if (row.state === "released") journal.state = ((_a = journal.evidence) == null ? void 0 : _a.length) ? "uncertain_released" : "released";
+      else if (journal.state === "verified" || journal.state === "writing" && await writesMatch(host, journal)) {
         if ((await settle(host, journal, "commit")).state === "committed") journal.state = "committed";
-      } else if (journal.state === "writing" && await writeOutcome(host, journal) === "none") {
-        journal.state = (await settle(host, journal, "release")).state;
       } else if (journal.state === "requesting") journal.state = "reserved";
       await host.persistNative();
     } catch (error) {
@@ -1759,7 +1716,7 @@ async function recoverNative(host) {
   }
 }
 async function reserveLegacyNative(..._args) {
-  new import_obsidian8.Notice("An older conversion is unresolved. Connect its original account and contact support before starting another conversion.");
+  new import_obsidian7.Notice("An older conversion is unresolved. Connect its original account and contact support before starting another conversion.");
   return null;
 }
 async function reserveNative(host, appId, eventId2, source, result, dimensions, reveal = false) {
@@ -1797,23 +1754,12 @@ async function reserveNative(host, appId, eventId2, source, result, dimensions, 
         retained.state = "writing";
         retained.evidence = evidence;
         await host.persistNative();
-        host.nativeWriting = true;
         return true;
       },
-      completeWrites: async (paths) => {
-        if (retained.state !== "writing") return;
-        retained.unwritten_paths = [...new Set(paths)].filter((path) => {
-          var _a2;
-          return (_a2 = retained.evidence) == null ? void 0 : _a2.some((e) => e.path === path);
-        });
-        await host.persistNative();
-        host.nativeWriting = false;
-      },
       commit: async () => {
-        host.nativeWriting = false;
         if (retained.state === "committed") return { kind: "committed" };
         if (retained.state !== "writing" && !reveal) throw new Error("The conversion has not been written.");
-        if (!reveal && await writeOutcome(host, retained) !== "some") return { kind: "pending" };
+        if (!reveal && !await writesMatch(host, retained)) return { kind: "pending" };
         retained.state = "verified";
         await host.persistNative();
         try {
@@ -1827,15 +1773,7 @@ async function reserveNative(host, appId, eventId2, source, result, dimensions, 
         }
       },
       rollback: async () => {
-        host.nativeWriting = false;
-        if (retained.state === "writing") {
-          const outcome = await writeOutcome(host, retained);
-          if (outcome === "unknown") return;
-          if (outcome === "some") {
-            await reservation.commit();
-            return;
-          }
-        } else if (retained.state !== "reserved") return;
+        if (retained.state !== "reserved") return;
         const row2 = await settle(host, retained, "release");
         retained.state = row2.state;
         await host.persistNative();
@@ -1845,7 +1783,7 @@ async function reserveNative(host, appId, eventId2, source, result, dimensions, 
     return reservation;
   } catch (error) {
     diagnostics.failure("native.reserve", error);
-    new import_obsidian8.Notice(error instanceof Error ? error.message : String(error));
+    new import_obsidian7.Notice(error instanceof Error ? error.message : String(error));
     return null;
   }
 }
@@ -1858,11 +1796,11 @@ async function renderNativePacks(container, host, appId, _buy) {
     await syncEntitlements2(host.settings, () => host.persistNative());
   } });
 }
-var import_obsidian8, pendingStates, owner2;
+var import_obsidian7, pendingStates, owner2;
 var init_native_operations = __esm({
   "publish/src/native-operations.ts"() {
     "use strict";
-    import_obsidian8 = require("obsidian");
+    import_obsidian7 = require("obsidian");
     init_diagnostics();
     init_constance_account();
     init_constance_v2();
@@ -2029,7 +1967,7 @@ async function initializeBilling(host) {
     host.settings.pendingCheckoutKeys = Object.fromEntries(Object.entries((_f = host.settings.pendingCheckoutKeys) != null ? _f : {}).filter(([pack, key]) => /^[a-zA-Z0-9_-]{1,80}$/.test(pack) && typeof key === "string" && key.startsWith("checkout_")));
     resetDailyFreeRepairs(host.settings);
     await host.persistBillingSettings();
-    if (host.settings.billingAccountLinked) void diagnostics.guard("billing.background_2", () => syncBalance(host).then(async () => {
+    void diagnostics.guard("billing.background_2", () => syncBalance(host).then(async () => {
       var _a2, _b2, _c2, _d2, _e2, _f2, _g2;
       const diagnosticEnd8 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "billing.background.9811")) != null ? _c2 : (() => {
       });
@@ -2134,8 +2072,8 @@ var init_billing = __esm({
       const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing.defaultRequester")) != null ? _c : (() => {
       });
       try {
-        const { requestUrl: requestUrl7 } = await import("obsidian");
-        return (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.billing.request", requestUrl7, request)) != null ? _f : requestUrl7(request);
+        const { requestUrl: requestUrl6 } = await import("obsidian");
+        return (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.billing.request", requestUrl6, request)) != null ? _f : requestUrl6(request);
       } catch (diagnosticError2) {
         (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "billing.defaultRequester", diagnosticError2);
         throw diagnosticError2;
@@ -2154,124 +2092,8 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 
-// publish/src/windows-diagnostics.ts
-var import_obsidian = require("obsidian");
-var reporters = /* @__PURE__ */ new WeakMap();
-function diagnosticError(value, seen = /* @__PURE__ */ new WeakSet()) {
-  const clean = (text) => text.replace(/(?:bearer\s+|["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)["']?\s*[:=]\s*["']?)[^\s,;"'&}]+|sk-[a-zA-Z0-9_-]{12,}/gi, "[credential]");
-  if (!value || typeof value !== "object") return clean(String(value));
-  if (seen.has(value)) return "[Circular error reference]";
-  seen.add(value);
-  const error = value;
-  return {
-    kind: clean(error.name || "Error"),
-    message: clean(error.message || String(value)),
-    stack: clean(error.stack || ""),
-    ..."cause" in error ? { cause: diagnosticError(error.cause, seen) } : {},
-    ...Array.isArray(error.errors) ? { errors: error.errors.map((item) => diagnosticError(item, seen)) } : {}
-  };
-}
-function recordPluginDiagnostic(plugin, name, error) {
-  var _a;
-  try {
-    (_a = reporters.get(plugin)) == null ? void 0 : _a(name, error);
-  } catch (e) {
-  }
-}
-function installWindowsDiagnostics(plugin) {
-  if (!/Win/i.test(navigator.platform)) return;
-  const key = "datadog.pending." + plugin.manifest.id;
-  let active = true, busy = false;
-  const history = [];
-  const session = Date.now().toString(36) + Math.random().toString(36).slice(2);
-  let pending = [];
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) || "[]");
-    if (Array.isArray(saved)) pending = saved.filter((s) => typeof s === "string").slice(0, 64);
-  } catch (_) {
-  }
-  const save = () => {
-    try {
-      localStorage.setItem(key, JSON.stringify(pending));
-    } catch (_) {
-    }
-  };
-  const flush = async () => {
-    if (!active || busy || pending.length === 0) return;
-    busy = true;
-    try {
-      while (active && pending.length > 0) {
-        const batch = pending.slice(0, 10);
-        const response = await (0, import_obsidian.requestUrl)({
-          url: "https://browser-intake-us5-datadoghq.com/api/v2/logs?ddsource=obsidian&dd-api-key=pub389b83c36d451a11dc32f7a71251a5c9",
-          method: "POST",
-          contentType: "application/json",
-          body: "[" + batch.join(",") + "]",
-          throw: false
-        });
-        if (response.status < 200 || response.status >= 300) break;
-        for (const row of batch) {
-          const index = pending.indexOf(row);
-          if (index >= 0) pending.splice(index, 1);
-        }
-        save();
-      }
-    } catch (_) {
-    } finally {
-      busy = false;
-    }
-  };
-  const record = (name, error) => {
-    if (!active) return;
-    if (pending.length >= 64) {
-      if (error === void 0) return;
-      pending.shift();
-    }
-    const exception = error === void 0 ? void 0 : diagnosticError(error);
-    pending.push(JSON.stringify({
-      service: plugin.manifest.id,
-      ddsource: "obsidian",
-      message: name,
-      status: exception ? "error" : "info",
-      version: plugin.manifest.version,
-      ddtags: "env:production,platform:windows",
-      date: (/* @__PURE__ */ new Date()).toISOString(),
-      session_id: session,
-      ...exception ? { error: exception, breadcrumbs: history.slice() } : {}
-    }));
-    save();
-    void flush();
-  };
-  reporters.set(plugin, (name, error) => {
-    if (!/^[a-z0-9][a-z0-9._-]{0,99}$/i.test(name)) return;
-    if (error !== void 0) record(name, error);
-    history.push((/* @__PURE__ */ new Date()).toISOString() + " " + name);
-    if (history.length > 64) history.shift();
-  });
-  const ownError = (error) => error instanceof Error && (error.stack || "").includes("plugin:" + plugin.manifest.id);
-  const onError = (event) => {
-    if (ownError(event.error)) recordPluginDiagnostic(plugin, "unhandled_error", event.error);
-  };
-  const onRejection = (event) => {
-    if (ownError(event.reason)) recordPluginDiagnostic(plugin, "unhandled_rejection", event.reason);
-  };
-  window.addEventListener("error", onError);
-  window.addEventListener("unhandledrejection", onRejection);
-  const retry = window.setInterval(() => {
-    void flush();
-  }, 3e4);
-  plugin.register(() => {
-    reporters.delete(plugin);
-    active = false;
-    window.clearInterval(retry);
-    window.removeEventListener("error", onError);
-    window.removeEventListener("unhandledrejection", onRejection);
-  });
-  record("app_started");
-}
-
 // publish/src/matomo-plugin.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian = require("obsidian");
 var import_matomo_client = __toESM(require_matomo_client());
 var instances = /* @__PURE__ */ new WeakMap();
 function initializeMatomo(plugin) {
@@ -2280,13 +2102,12 @@ function initializeMatomo(plugin) {
     const client = new import_matomo_client.MatomoClient({ product: "obsidian_cairn_vault_linter", siteId: 124, platform: "obsidian", features: ["vault_scan", "repair_completed"] }, {
       storage: (0, import_matomo_client.localStorageAdapter)(window.localStorage),
       send: async (body) => {
-        return await (0, import_obsidian2.requestUrl)({ url: "https://atcdn.cyou/matomo.php", method: "POST", contentType: "application/x-www-form-urlencoded", body, throw: false });
+        await (0, import_obsidian.requestUrl)({ url: "https://atcdn.cyou/matomo.php", method: "POST", contentType: "application/x-www-form-urlencoded", body, throw: false });
       }
     });
     instances.set(plugin, client);
-    installWindowsDiagnostics(plugin);
     plugin.register(() => {
-      client.dispose();
+      client.enabled = false;
       instances.delete(plugin);
     });
     void client.initialize().then(() => client.screen("home")).catch(() => {
@@ -2296,14 +2117,14 @@ function initializeMatomo(plugin) {
 }
 
 // publish/src/selection-scope.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian2 = require("obsidian");
 function selectedFiles(entries, accepts) {
   const files = /* @__PURE__ */ new Map();
   const folders = /* @__PURE__ */ new Set();
   const visit = (entry) => {
-    if (entry instanceof import_obsidian3.TFile) {
+    if (entry instanceof import_obsidian2.TFile) {
       if (accepts(entry) && !files.has(entry.path)) files.set(entry.path, entry);
-    } else if (entry instanceof import_obsidian3.TFolder && !folders.has(entry.path)) {
+    } else if (entry instanceof import_obsidian2.TFolder && !folders.has(entry.path)) {
       folders.add(entry.path);
       for (const child of [...entry.children]) visit(child);
     }
@@ -2316,7 +2137,7 @@ var markdownFile = (file) => file.extension.toLowerCase() === "md";
 // publish/src/main.ts
 init_diagnostics();
 init_native_operations();
-var import_obsidian11 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // publish/src/core.ts
 init_diagnostics();
@@ -2371,7 +2192,7 @@ function parseAliases(content) {
   return aliases;
 }
 function parseHeadingsAndBlocks(content) {
-  const lines = splitLines(maskCode(content));
+  const lines = splitLines(content);
   const headings = [];
   const blocks = [];
   lines.forEach((line, index) => {
@@ -2401,32 +2222,13 @@ function parseTarget(target) {
   if (hash >= 0 && (caret < 0 || hash < caret)) {
     fragment = value.slice(hash + 1).trim();
     value = value.slice(0, hash).trim();
-    fragmentKind = fragment.startsWith("^") ? "block" : "heading";
-    if (fragmentKind === "block") fragment = fragment.slice(1);
+    fragmentKind = "heading";
   } else if (caret >= 0) {
     fragment = value.slice(caret + 1).trim();
     value = value.slice(0, caret).trim();
     fragmentKind = "block";
   }
   return { path: value, fragment, fragmentKind };
-}
-function maskCode(content) {
-  let fence = "";
-  let length = 0;
-  return content.split(/(\r?\n)/).map((line) => {
-    if (/^\r?\n$/.test(line)) return line;
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (fence) {
-      if (marker && marker[1][0] === fence && marker[1].length >= length && !marker[2].trim()) fence = "";
-      return line.replace(/./g, " ");
-    }
-    if (marker) {
-      fence = marker[1][0];
-      length = marker[1].length;
-      return line.replace(/./g, " ");
-    }
-    return line.replace(/(`+)([\s\S]*?)\1(?!`)/g, (value) => " ".repeat(value.length));
-  }).join("");
 }
 function parseLinks(content) {
   var _a;
@@ -2437,8 +2239,8 @@ function parseLinks(content) {
     links.push({ ...link, line, section: currentSection(lines, line - 1) });
   };
   const wiki = /(!?)\[\[([^\]\n]+)\]\]/g;
-  for (const match of maskCode(content).matchAll(wiki)) {
-    const raw = content.slice(match.index, (match.index || 0) + match[0].length);
+  for (const match of content.matchAll(wiki)) {
+    const raw = match[0];
     const inner = match[2].trim();
     const parts = inner.split("|");
     const target = ((_a = parts.shift()) == null ? void 0 : _a.trim()) || "";
@@ -2446,8 +2248,8 @@ function parseLinks(content) {
     addLink({ kind: "wiki", embed: match[1] === "!", raw, target, display: parts.join("|").trim(), ...parsed, start: match.index || 0, end: (match.index || 0) + raw.length }, match.index || 0);
   }
   const markdown = /(!?)\[([^\]\n]*)\]\(([^)\n]*)\)/g;
-  for (const match of maskCode(content).matchAll(markdown)) {
-    const raw = content.slice(match.index, (match.index || 0) + match[0].length);
+  for (const match of content.matchAll(markdown)) {
+    const raw = match[0];
     const target = stripMarkdownDestination(match[3]);
     const parsed = parseTarget(target);
     addLink({ kind: "markdown", embed: match[1] === "!", raw, target, display: match[2], ...parsed, start: match.index || 0, end: (match.index || 0) + raw.length }, match.index || 0);
@@ -2485,11 +2287,8 @@ function isHidden(path) {
   return normalizePath(path).split("/").some((part) => part.startsWith("."));
 }
 function resolveNote(path, source, byPath, byBasename, byAlias) {
-  var _a, _b, _c, _d;
+  var _a, _b;
   const raw = path.trim().replace(/^\//, "");
-  if (/\.[^/.]+$/.test(raw) && !/\.md$/i.test(raw)) {
-    return byPath.get(normalizePath(`${raw}.md`)) || ((_a = byBasename.get(normalizeText(raw))) == null ? void 0 : _a[0]) || ((_b = byAlias.get(normalizeText(raw))) == null ? void 0 : _b[0]);
-  }
   if (!raw) return byPath.get(normalizePath(source.path));
   const direct = byPath.get(normalizePath(raw)) || byPath.get(normalizePath(`${raw}.md`));
   if (direct) return direct;
@@ -2498,16 +2297,13 @@ function resolveNote(path, source, byPath, byBasename, byAlias) {
     const relativeNote = byPath.get(relative) || byPath.get(`${relative}.md`);
     if (relativeNote) return relativeNote;
   }
-  return ((_c = byBasename.get(normalizeText(pathWithoutExtension(raw)))) == null ? void 0 : _c[0]) || ((_d = byAlias.get(normalizeText(raw))) == null ? void 0 : _d[0]);
+  return ((_a = byBasename.get(normalizeText(pathWithoutExtension(raw)))) == null ? void 0 : _a[0]) || ((_b = byAlias.get(normalizeText(raw))) == null ? void 0 : _b[0]);
 }
 function resolveAnyFile(path, source, files) {
   const raw = path.trim().replace(/^\//, "");
   if (!raw) return void 0;
   const relative = normalizePath(`${source.path.split("/").slice(0, -1).join("/")}/${raw}`);
-  const direct = path.startsWith("/") ? files.get(normalizePath(raw)) : files.get(relative) || files.get(normalizePath(raw));
-  if (direct || raw.includes("/")) return direct;
-  const matches = [...files.values()].filter((file) => normalizePath(file.path.split("/").pop() || "") === normalizePath(raw));
-  return matches.length === 1 ? matches[0] : void 0;
+  return path.startsWith("/") ? files.get(normalizePath(raw)) : files.get(relative) || files.get(normalizePath(raw));
 }
 function cleanMeaningfulText(content) {
   const withoutFrontmatter = content.replace(/^(?:---|\+\+\+)\r?\n[\s\S]*?\r?\n(?:---|\+\+\+)\r?\n/, "");
@@ -2517,25 +2313,12 @@ function cleanMeaningfulText(content) {
 function attachRepair(finding, link, before, after) {
   finding.repair = { label: "Apply exact link repair", before, after, start: link.start, end: link.end };
 }
-function scanSettingsKey(settings) {
-  return JSON.stringify({ checks: Object.entries(settings.checks).sort(), ignoredFolders: settings.ignoredFolders, ignoredPatterns: settings.ignoredPatterns, scanHiddenFiles: settings.scanHiddenFiles, scanNonMarkdownFiles: settings.scanNonMarkdownFiles, emptyStubMaxCharacters: settings.emptyStubMaxCharacters, emptyStubMaxMeaningfulLines: settings.emptyStubMaxMeaningfulLines });
-}
-function sourceFolder(path) {
-  return path.slice(0, Math.max(0, path.lastIndexOf("/")));
-}
-function ignoreRuleMatches(finding, item) {
-  if (item.scope === "finding") return item.key === finding.id;
-  if (item.scope === "source") return item.key === finding.sourcePath;
-  return item.key === "/" ? !finding.sourcePath.includes("/") : finding.sourcePath === item.key || finding.sourcePath.startsWith(`${item.key}/`);
-}
-function scanVault(reader, settings, scopePaths, incremental = false, signal, onProgress, previousFindings = [], baseline) {
+function scanVault(reader, settings, scopePaths, incremental = false, signal, onProgress, previousFindings = []) {
   const started = Date.now();
-  settings = { ...settings, checks: { ...settings.checks }, ignoredFindings: [...settings.ignoredFindings] };
   return (async () => {
-    var _a;
     const allFiles = reader.getFiles().filter((file) => !isIgnoredPath(file.path, settings) && (settings.scanHiddenFiles || !isHidden(file.path)));
     const scanFiles = allFiles.filter((file) => settings.scanNonMarkdownFiles || file.extension.toLowerCase() === "md");
-    const selected = scopePaths !== void 0 ? scanFiles.filter((file) => scopePaths.includes(file.path)) : scanFiles;
+    const selected = (scopePaths == null ? void 0 : scopePaths.length) ? scanFiles.filter((file) => scopePaths.includes(file.path)) : scanFiles;
     const selectedPaths = new Set(selected.map((file) => file.path));
     const errors = [];
     const signatures = {};
@@ -2544,10 +2327,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
     const byPath = /* @__PURE__ */ new Map();
     const byBasename = /* @__PURE__ */ new Map();
     const byAlias = /* @__PURE__ */ new Map();
-    const settingsKey = scanSettingsKey(settings);
-    const changedOnly = incremental && scopePaths === void 0 && ((_a = baseline == null ? void 0 : baseline.scope) == null ? void 0 : _a.kind) === "vault" && baseline.settingsKey === settingsKey && !!baseline.dependencySignatures && !baseline.errors.length;
-    const scope = { kind: scopePaths === void 0 ? "vault" : "selection", paths: selected.map((file) => file.path).sort() };
-    const comparisonKey = JSON.stringify([scope.kind, scope.kind === "selection" ? scope.paths : [], settingsKey, settings.ignoredFindings]);
+    const changedOnly = incremental && Object.keys(settings.lastFileSignatures).length > 0;
     let scanned = 0;
     onProgress == null ? void 0 : onProgress({ phase: "indexing", currentPath: "", scanned: 0, total: selected.length, findings: 0 });
     for (const file of noteFiles) {
@@ -2560,6 +2340,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         const basenameKey = normalizeText(pathWithoutExtension(file.basename || file.path.split("/").pop() || ""));
         byBasename.set(basenameKey, [...byBasename.get(basenameKey) || [], index]);
         index.aliases.forEach((alias) => byAlias.set(normalizeText(alias), [...byAlias.get(normalizeText(alias)) || [], index]));
+        if (selectedPaths.has(file.path)) scanned++;
         onProgress == null ? void 0 : onProgress({ phase: "reading", currentPath: file.path, scanned, total: selected.length, findings: 0 });
       } catch (error) {
         diagnostics.failure("core.caught_1", error);
@@ -2568,6 +2349,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
       await Promise.resolve();
     }
     const readableFiles = new Map(allFiles.map((file) => [normalizePath(file.path), file]));
+    const findings = changedOnly ? previousFindings.filter((finding) => !selectedPaths.has(finding.sourcePath) && signatures[finding.sourcePath] !== void 0) : [];
     const incoming = /* @__PURE__ */ new Map();
     byPath.forEach((note) => note.outgoing.forEach((link) => {
       const target = resolveNote(link.path, note.file, byPath, byBasename, byAlias);
@@ -2582,34 +2364,6 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         headingOccurrences.set(key, [...headingOccurrences.get(key) || [], { note, heading }]);
       });
     });
-    const dependencySignatures = {};
-    byPath.forEach((note) => {
-      const targets = note.outgoing.map((link) => {
-        var _a2;
-        if (EXTERNAL_TARGET.test(link.path)) return "external";
-        let path = link.path;
-        if (link.kind === "markdown") {
-          try {
-            path = decodeURIComponent(path);
-          } catch (e) {
-          }
-        }
-        const target = link.kind === "wiki" ? ((_a2 = resolveNote(path, note.file, byPath, byBasename, byAlias)) == null ? void 0 : _a2.file) || resolveAnyFile(path, note.file, readableFiles) : !path && link.fragmentKind !== "none" ? note.file : resolveAnyFile(path, note.file, readableFiles);
-        return target ? [target.path, signatures[target.path]] : null;
-      });
-      dependencySignatures[note.file.path] = JSON.stringify([targets, incoming.get(note.file.path) || 0, note.blocks.map((block) => {
-        var _a2;
-        return [block.id, ((_a2 = blockOccurrences.get(block.id)) == null ? void 0 : _a2.length) || 0];
-      })]);
-    });
-    if (changedOnly && baseline) {
-      selectedPaths.clear();
-      selected.forEach((file) => {
-        var _a2;
-        if (baseline.signatures[file.path] !== signatures[file.path] || ((_a2 = baseline.dependencySignatures) == null ? void 0 : _a2[file.path]) !== dependencySignatures[file.path]) selectedPaths.add(file.path);
-      });
-    }
-    const findings = changedOnly ? previousFindings.filter((finding) => !selectedPaths.has(finding.sourcePath) && signatures[finding.sourcePath] !== void 0) : [];
     for (const [id, occurrences] of blockOccurrences) {
       if (occurrences.length < 2 || !settings.checks["duplicate-block-id"]) continue;
       occurrences.forEach(({ note, block }) => {
@@ -2619,7 +2373,6 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
     }
     byPath.forEach((note) => {
       if (!selectedPaths.has(note.file.path)) return;
-      scanned++;
       if (settings.checks["duplicate-heading-id"]) {
         const seen = /* @__PURE__ */ new Map();
         note.headings.forEach((heading) => seen.set(heading.id, [...seen.get(heading.id) || [], heading]));
@@ -2629,7 +2382,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         });
       }
       if (settings.checks["malformed-link"]) {
-        splitLines(maskCode(note.content)).forEach((line, index) => {
+        splitLines(note.content).forEach((line, index) => {
           if (line.includes("[[") && !line.includes("]]")) findings.push(malformedLinkFinding(note.file.path, note.content, index + 1, line.trim(), "This wikilink is not closed before the end of the line."));
           if (line.includes("](") && !line.includes(")")) findings.push(malformedLinkFinding(note.file.path, note.content, index + 1, line.trim(), "This Markdown link is not closed before the end of the line."));
         });
@@ -2649,7 +2402,7 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
           } catch (e) {
           }
         }
-        const resolution = link.kind === "wiki" ? resolveNote(link.path, note.file, byPath, byBasename, byAlias) || resolveAnyFile(link.path, note.file, readableFiles) : !decodedPath && link.fragmentKind !== "none" ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(decodedPath, note.file, readableFiles);
+        const resolution = link.kind === "wiki" ? resolveNote(link.path, note.file, byPath, byBasename, byAlias) || (link.embed ? resolveAnyFile(link.path, note.file, readableFiles) : void 0) : !decodedPath && link.fragmentKind !== "none" ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(decodedPath, note.file, readableFiles);
         const targetNote = resolution ? "headings" in resolution ? resolution : byPath.get(normalizePath(resolution.path)) : void 0;
         if (!resolution) {
           if (link.embed && settings.checks["broken-embed"]) findings.push(makeFinding("broken-embed", "high", note.file.path, link.line, link.section, link.target, "This embedded note or local attachment does not exist in the vault.", false, context));
@@ -2666,16 +2419,13 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
           }
         }
         const resolvedPath = resolution ? "file" in resolution ? resolution.file.path : resolution.path : link.path;
-        const canonical = `${link.embed}|${resolvedPath}|${link.fragmentKind}|${normalizeText(link.fragment)}`;
+        const canonical = `${resolvedPath}|${link.fragmentKind}|${normalizeText(link.fragment)}`;
         seenLinks.set(canonical, [...seenLinks.get(canonical) || [], link]);
         const duplicateGroup = seenLinks.get(canonical);
         if (duplicateGroup && duplicateGroup.length > 1 && settings.checks["duplicate-link"]) {
           const first = duplicateGroup[0];
           const duplicate = makeFinding("duplicate-link", "low", note.file.path, link.line, link.section, link.target, `This link repeats the same target already linked at line ${first.line}.`, true, context);
-          const previous = duplicateGroup[duplicateGroup.length - 2];
-          if (!link.embed && previous.raw === link.raw && /^[ \t]+$/.test(note.content.slice(previous.end, link.start))) {
-            attachRepair(duplicate, link, link.raw, link.display || link.path || link.fragment);
-          }
+          attachRepair(duplicate, link, link.raw, "");
           findings.push(duplicate);
         }
       });
@@ -2684,20 +2434,19 @@ function scanVault(reader, settings, scopePaths, incremental = false, signal, on
         const isStub = clean.text.length <= settings.emptyStubMaxCharacters && clean.lines <= settings.emptyStubMaxMeaningfulLines && (incoming.get(note.file.path) || 0) === 0 && note.outgoing.length === 0;
         if (isStub) findings.push(makeFinding("empty-stub", "low", note.file.path, 1, "(document)", note.file.path, "This Markdown note is empty or nearly empty and has no detected incoming or outgoing links.", false, clean.text || "(no meaningful text)"));
       }
-      onProgress == null ? void 0 : onProgress({ phase: "checking", currentPath: note.file.path, scanned, total: selectedPaths.size, findings: findings.length });
+      onProgress == null ? void 0 : onProgress({ phase: "checking", currentPath: note.file.path, scanned, total: selected.length, findings: findings.length });
     });
     const unique = /* @__PURE__ */ new Map();
     findings.forEach((finding) => unique.set(finding.id, finding));
     const resultFindings = [...unique.values()].sort((a, b) => a.sourcePath.localeCompare(b.sourcePath) || a.line - b.line || a.type.localeCompare(b.type));
-    onProgress == null ? void 0 : onProgress({ phase: "complete", currentPath: "", scanned, total: selectedPaths.size, findings: resultFindings.length });
-    return { findings: resultFindings, errors, filesScanned: scanned, durationMs: Date.now() - started, cancelled: false, signatures, scope, comparisonKey, settingsKey, dependencySignatures, notesIndexed: byPath.size, incremental: !!changedOnly };
+    onProgress == null ? void 0 : onProgress({ phase: "complete", currentPath: "", scanned, total: selected.length, findings: resultFindings.length });
+    return { findings: resultFindings, errors, filesScanned: scanned, durationMs: Date.now() - started, cancelled: false, signatures };
   })();
 }
 function applyIgnoredFindings(findings, ignored) {
   return findings.map((finding) => {
-    const match = ignored.find((item) => ignoreRuleMatches(finding, item));
-    const { ignored: oldIgnored, ignoredReason: oldReason, ...clean } = finding;
-    return match ? { ...clean, ignored: true, ignoredReason: match.reason } : clean;
+    const match = ignored.find((item) => item.scope === "finding" ? item.key === finding.id : item.scope === "source" ? item.key === finding.sourcePath : finding.sourcePath === item.key || finding.sourcePath.startsWith(`${item.key}/`));
+    return match ? { ...finding, ignored: true, ignoredReason: match.reason } : finding;
   });
 }
 function findingCounts(findings) {
@@ -2818,7 +2567,7 @@ var DEFAULT_SETTINGS = {
 
 // publish/src/plugin-support.ts
 init_diagnostics();
-var import_obsidian9 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var SAFE_DETAIL_KEYS = /* @__PURE__ */ new Set([
   "version",
   "operation",
@@ -2854,11 +2603,20 @@ var SAFE_DETAIL_KEYS = /* @__PURE__ */ new Set([
   "durationMs",
   "elapsedMs"
 ]);
+function safeString(value) {
+  if (value.length <= 120 && /^[A-Za-z0-9 _=.,:-]*$/.test(value) && !/(?:sk-[A-Za-z0-9]|bearer|api.?key|token|secret)/i.test(value)) {
+    return value;
+  }
+  return "[omitted]";
+}
 function isError2(value) {
   return value instanceof Error || Object.prototype.toString.call(value) === "[object Error]";
 }
 function safeDetail(value) {
-  if (isError2(value)) return JSON.stringify(diagnosticError(value));
+  if (isError2(value)) {
+    const status = value.httpStatus;
+    return JSON.stringify({ errorType: safeString(value.name || "Error"), ...typeof status === "number" && Number.isFinite(status) ? { httpStatus: status } : {} });
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) return "[detail omitted]";
   const safe = {};
   for (const [key, item] of Object.entries(value)) {
@@ -2872,7 +2630,7 @@ function safeDetail(value) {
   }
   return JSON.stringify(safe);
 }
-var DocumentationModal = class extends import_obsidian9.Modal {
+var DocumentationModal = class extends import_obsidian8.Modal {
   constructor(app, docs, plugin, welcome = false) {
     super(app);
     __publicField(this, "docs", docs);
@@ -2892,14 +2650,14 @@ var DocumentationModal = class extends import_obsidian9.Modal {
         target == null ? void 0 : target.openTabById((_a = this.plugin) == null ? void 0 : _a.manifest.id);
         this.close();
       };
-      new import_obsidian9.Setting(this.contentEl).addButton((button) => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings))).addButton((button) => button.setButtonText("Scan vault").onClick(() => {
+      new import_obsidian8.Setting(this.contentEl).addButton((button) => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings))).addButton((button) => button.setButtonText("Scan vault").onClick(() => {
         return diagnostics.guard("plugin-support.control_3", () => {
           var _a, _b;
           const commands = this.app.commands;
           const command = "scan-full-vault";
           const id = command === "command-palette:open" ? command : ((_a = this.plugin) == null ? void 0 : _a.manifest.id) + ":" + command;
           const available = (_b = commands == null ? void 0 : commands.executeCommandById) == null ? void 0 : _b.call(commands, id);
-          if (available === false || !(commands == null ? void 0 : commands.executeCommandById)) new import_obsidian9.Notice("Open the command palette and choose " + this.docs.name + ". Check the selected note or attachment first.");
+          if (available === false || !(commands == null ? void 0 : commands.executeCommandById)) new import_obsidian8.Notice("Open the command palette and choose " + this.docs.name + ". Check the selected note or attachment first.");
           this.close();
         });
       }));
@@ -2911,7 +2669,7 @@ var DocumentationModal = class extends import_obsidian9.Modal {
         return details;
       };
       const problems = section("Common problems", ["Email not received? Check spam, confirm the address in Account, then use Connect again after verification. Use the account page for recovery; do not create another account to recover purchases.", ...this.docs.troubleshooting]);
-      new import_obsidian9.Setting(problems).addButton((button) => button.setButtonText("Open account").onClick(diagnostics.wrap("plugin-support.control_4", settings)));
+      new import_obsidian8.Setting(problems).addButton((button) => button.setButtonText("Open account").onClick(diagnostics.wrap("plugin-support.control_4", settings)));
       problems.createEl("a", { text: "Forgot password?", href: "https://app.tutivsoft.com/password-reset", attr: { target: "_blank", rel: "noopener noreferrer" } });
       section("Account and purchases", ["Your remaining free allowance and purchases belong to your account. Your credit balance stays with your account after reinstalling. Current prices are shown in Account. Refresh balance after a delayed payment instead of purchasing again."]);
       section("Advanced settings \u2014 optional", ["Simple shows everyday controls. Open Settings and choose Advanced for more customization and troubleshooting. Switching views keeps saved preferences."]);
@@ -2946,7 +2704,7 @@ var PluginSupport = class {
   addDebugSetting(containerEl) {
     const renderEnd = diagnostics.start("settings.render.debug_logging");
     try {
-      new import_obsidian9.Setting(containerEl).setName("Debug logging").setDesc("Record detailed activity logs for troubleshooting. Off by default.").addToggle((toggle) => toggle.setValue(this.debugEnabled()).onChange((value) => diagnostics.guard("plugin-support.control_7", () => this.setDebugLogging(value))));
+      new import_obsidian8.Setting(containerEl).setName("Debug logging").setDesc("Record detailed activity logs for troubleshooting. Off by default.").addToggle((toggle) => toggle.setValue(this.debugEnabled()).onChange((value) => diagnostics.guard("plugin-support.control_7", () => this.setDebugLogging(value))));
     } finally {
       renderEnd();
     }
@@ -3015,10 +2773,10 @@ var PluginSupport = class {
       callback: async () => {
         try {
           await this.setDebugLogging(!this.debugEnabled());
-          new import_obsidian9.Notice(this.docs.name + ": debug logging " + (this.debugEnabled() ? "enabled." : "disabled."));
+          new import_obsidian8.Notice(this.docs.name + ": debug logging " + (this.debugEnabled() ? "enabled." : "disabled."));
         } catch (caughtError10) {
           diagnostics.failure("plugin-support.caught_11", caughtError10);
-          new import_obsidian9.Notice(this.docs.name + ": could not save the logging setting. Try again.");
+          new import_obsidian8.Notice(this.docs.name + ": could not save the logging setting. Try again.");
         }
       }
     });
@@ -3037,7 +2795,7 @@ var PluginSupport = class {
         void diagnostics.guard("plugin-support.background_13", () => persist().then(() => new DocumentationModal(this.plugin.app, this.docs, this.plugin, true).open()).catch((rejectedError1) => {
           diagnostics.failure("plugin-support.rejected_2", rejectedError1);
           state.flowWelcomeSeen = false;
-          new import_obsidian9.Notice("Could not save setup progress. Your existing data is unchanged; reopen Help to continue.");
+          new import_obsidian8.Notice("Could not save setup progress. Your existing data is unchanged; reopen Help to continue.");
         }));
       });
     });
@@ -3047,7 +2805,7 @@ var PluginSupport = class {
     if (now - this.lastFailureNotice < 5e3) return;
     this.lastFailureNotice = now;
     try {
-      new import_obsidian9.Notice(this.docs.name + ": this action could not be completed. Try again or copy the diagnostic log for support.");
+      new import_obsidian8.Notice(this.docs.name + ": this action could not be completed. Try again or copy the diagnostic log for support.");
     } catch (caughtError14) {
     }
   }
@@ -3065,7 +2823,7 @@ var PluginSupport = class {
     return ((_a = this.plugin.settings) == null ? void 0 : _a.autoShowOperationWindows) === true;
   }
   addHelpSetting(containerEl) {
-    new import_obsidian9.Setting(containerEl).setName("Show automatic windows").setDesc("Open queue, progress, result, and welcome windows automatically. Off by default; status messages remain visible.").addToggle((toggle) => toggle.setValue(this.automaticWindowsEnabled()).onChange(async (enabled2) => {
+    new import_obsidian8.Setting(containerEl).setName("Show automatic windows").setDesc("Open queue, progress, result, and welcome windows automatically. Off by default; status messages remain visible.").addToggle((toggle) => toggle.setValue(this.automaticWindowsEnabled()).onChange(async (enabled2) => {
       const host = this.plugin;
       const previous = host.settings.autoShowOperationWindows;
       host.settings.autoShowOperationWindows = enabled2;
@@ -3076,13 +2834,13 @@ var PluginSupport = class {
       } catch (error) {
         host.settings.autoShowOperationWindows = previous;
         toggle.setValue(this.automaticWindowsEnabled());
-        new import_obsidian9.Notice("Could not save the automatic windows preference. Try again.");
+        new import_obsidian8.Notice("Could not save the automatic windows preference. Try again.");
       }
     }));
-    new import_obsidian9.Setting(containerEl).setName("Help").setDesc("Get started, recover your account, or remove the plugin.").addButton((button) => button.setButtonText("Open Help").onClick(() => diagnostics.guard("plugin-support.control_16", () => new DocumentationModal(this.plugin.app, this.docs, this.plugin).open())));
+    new import_obsidian8.Setting(containerEl).setName("Help").setDesc("Get started, recover your account, or remove the plugin.").addButton((button) => button.setButtonText("Open Help").onClick(() => diagnostics.guard("plugin-support.control_16", () => new DocumentationModal(this.plugin.app, this.docs, this.plugin).open())));
   }
   addDiagnosticsSetting(containerEl) {
-    new import_obsidian9.Setting(containerEl).setName("Diagnostics").setDesc("Copy up to the latest 1,000 events recorded by this plugin. Logs reset when the plugin reloads. Note contents, paths, credentials, and raw error messages are excluded.").addButton((button) => button.setButtonText("Copy full log").onClick(() => {
+    new import_obsidian8.Setting(containerEl).setName("Diagnostics").setDesc("Copy up to the latest 1,000 events recorded by this plugin. Logs reset when the plugin reloads. Note contents, paths, credentials, and raw error messages are excluded.").addButton((button) => button.setButtonText("Copy full log").onClick(() => {
       return diagnostics.guard("plugin-support.control_17", () => {
         void diagnostics.guard("plugin-support.background_18", () => this.copyDiagnostics());
       });
@@ -3116,12 +2874,8 @@ var PluginSupport = class {
     const stage = "command." + (this.knownCommands.has(commandId) ? commandId : "custom");
     return diagnostics.guard(stage, () => diagnostics.run(stage, action), false);
   }
-  breadcrumb(event) {
-    recordPluginDiagnostic(this.plugin, event);
-  }
   record(level, event, detail) {
     var _a, _b;
-    recordPluginDiagnostic(this.plugin, event, level === "error" ? detail : void 0);
     const admittedEnd = event.endsWith(".end") && typeof (detail == null ? void 0 : detail.span) === "number";
     if (level === "info" && !this.debugEnabled() && !admittedEnd) return;
     const now = Date.now();
@@ -3174,24 +2928,24 @@ var PluginSupport = class {
       await navigator.clipboard.writeText(text);
       this.info("diagnostics.copy_succeeded", { total: snapshot.length });
       const omitted = this.droppedEntries ? "; " + this.droppedEntries + " older events omitted" : "";
-      new import_obsidian9.Notice(this.docs.name + ": copied " + snapshot.length + " log events" + omitted + ".");
+      new import_obsidian8.Notice(this.docs.name + ": copied " + snapshot.length + " log events" + omitted + ".");
     } catch (error) {
       diagnostics.failure("plugin-support.caught_22", error);
       this.error("diagnostics.copy_failed", error);
-      new import_obsidian9.Notice(this.docs.name + ": could not copy the debug log.");
+      new import_obsidian8.Notice(this.docs.name + ": could not copy the debug log.");
     }
   }
 };
 
 // publish/src/sidebar-icon.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 function registerSidebarIcon(plugin, viewType, icon) {
   const refresh = () => {
     for (const leaf of plugin.app.workspace.getLeavesOfType(viewType)) {
       if (leaf.view.icon === icon) continue;
       leaf.view.icon = icon;
       const header = leaf.tabHeaderInnerIconEl;
-      if (header) (0, import_obsidian10.setIcon)(header, icon);
+      if (header) (0, import_obsidian9.setIcon)(header, icon);
     }
   };
   plugin.app.workspace.onLayoutReady(refresh);
@@ -3243,7 +2997,7 @@ function diffPreview(before, after) {
     ...afterLines.slice(first, afterEnd).map((line) => `+ ${line}`)
   ].join("\n");
 }
-var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
+var CairnVaultLinterPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "support");
@@ -3252,12 +3006,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     __publicField(this, "lastErrors", []);
     __publicField(this, "lastScan", null);
     __publicField(this, "scanAbort", null);
-    __publicField(this, "reportNeedsScan", false);
-    __publicField(this, "comparisonDelta", null);
-    __publicField(this, "sourceFiles", /* @__PURE__ */ new Map());
-    __publicField(this, "lastNote", null);
     __publicField(this, "repairApplying", false);
-    __publicField(this, "nativeWriting", false);
     __publicField(this, "scannedSources", /* @__PURE__ */ new Map());
     __publicField(this, "scanPreview");
     __publicField(this, "repairAuthorizations", /* @__PURE__ */ new WeakMap());
@@ -3289,7 +3038,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.onload")) != null ? _c : (() => {
     });
     try {
-      this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and confirm repair changes and credit costs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review available repairs and confirm their credit cost."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+      this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply safe repairs directly or with optional review.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Apply safe repairs or enable review in settings."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
       this.support.start();
       this.settings = mergeSettings(await this.loadData());
       diagnosticStartupEnd = (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.start) == null ? void 0 : _e.call(_d, "startup.initialize")) != null ? _f : (() => {
@@ -3303,13 +3052,9 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         });
       }, 15e3));
       this.reader = this.createReader();
-      this.lastNote = this.app.workspace.getActiveFile();
-      this.registerEvent(this.app.workspace.on("file-open", (file) => {
-        if ((file == null ? void 0 : file.extension.toLowerCase()) === "md") this.lastNote = file;
-      }));
       this.registerView(VIEW_TYPE_CAIRN, (leaf) => new CairnView(leaf, this));
       registerSidebarIcon(this, VIEW_TYPE_CAIRN, "checkmark");
-      this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => diagnostics.guard("main.event_3", () => void diagnostics.guard("main.background_4", () => this.openDashboard(true))));
+      this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => diagnostics.guard("main.event_3", () => void diagnostics.guard("main.background_4", () => this.openDashboard())));
       this.addCommand({ id: "scan-full-vault", name: "Scan full vault", callback: () => this.runScan() });
       this.addCommand({ id: "scan-current-note", name: "Scan current note", checkCallback: (checking) => this.scanCurrentNote(checking) });
       this.addCommand({ id: "scan-current-folder", name: "Scan current folder", checkCallback: (checking) => this.scanCurrentFolder(checking) });
@@ -3320,7 +3065,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
       this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => diagnostics.guard("main.event_6", () => this.addFilesMenuItems(menu, files))));
       this.registerEvent(this.app.workspace.on("editor-menu", (menu, _editor, info) => {
         return diagnostics.guard("main.event_7", () => {
-          if (info.file instanceof import_obsidian11.TFile) this.addScanMenuItem(menu, [info.file.path], "Cairn: Scan this note");
+          if (info.file instanceof import_obsidian10.TFile) this.addScanMenuItem(menu, [info.file.path], "Cairn: Scan this note");
         });
       }));
       this.addSettingTab(new CairnSettingTab(this.app, this));
@@ -3382,10 +3127,10 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         const diagnosticEnd5 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.background.7408")) != null ? _c : (() => {
         });
         try {
+          if (record.size > 2e5) throw new Error("Preview supports notes smaller than 200 KB. Choose a smaller note.");
           const file = this.app.vault.getAbstractFileByPath(record.path);
-          if (!(file instanceof import_obsidian11.TFile)) throw new Error("File is no longer available");
+          if (!(file instanceof import_obsidian10.TFile)) throw new Error("File is no longer available");
           const content = await this.app.vault.read(file);
-          this.sourceFiles.set(file.path, file);
           this.scannedSources.set(file.path, content);
           return await content;
         } catch (diagnosticError5) {
@@ -3397,15 +3142,15 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
       }
     };
   }
-  async openDashboard(inTab = false) {
+  async openDashboard() {
     var _a, _b, _c, _d, _e;
     const diagnosticEnd6 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.openDashboard")) != null ? _c : (() => {
     });
     try {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CAIRN)[0];
-      const leaf = inTab && (existing == null ? void 0 : existing.getRoot()) !== this.app.workspace.rootSplit ? this.app.workspace.getLeaf("tab") : existing || this.app.workspace.getLeaf("tab");
+      const leaf = existing || this.app.workspace.getRightLeaf(false);
+      if (!leaf) return;
       await leaf.setViewState({ type: VIEW_TYPE_CAIRN, active: true });
-      if (existing && existing !== leaf) existing.detach();
       this.app.workspace.revealLeaf(leaf);
     } catch (diagnosticError6) {
       (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.openDashboard", diagnosticError6);
@@ -3430,27 +3175,17 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
       diagnosticEnd7();
     }
   }
-  scanFile() {
-    const file = this.app.workspace.getActiveFile() || this.lastNote;
-    return (file == null ? void 0 : file.extension.toLowerCase()) === "md" && this.app.vault.getAbstractFileByPath(file.path) === file ? file : null;
-  }
-  async rescanReport() {
-    var _a, _b;
-    await this.runScan(((_b = (_a = this.lastScan) == null ? void 0 : _a.scope) == null ? void 0 : _b.kind) === "selection" ? this.lastScan.scope.paths : void 0);
-  }
   scanCurrentNote(checking) {
-    const file = this.scanFile();
+    const file = this.app.workspace.getActiveFile();
     if (checking) return !!file && file.extension.toLowerCase() === "md";
     if (file) void diagnostics.guard("main.background_11", () => this.runScan([file.path]));
-    else new import_obsidian11.Notice("Open a Markdown note first, then scan it from Cairn.");
     return true;
   }
   scanCurrentFolder(checking) {
-    const file = this.scanFile();
+    const file = this.app.workspace.getActiveFile();
     const folder = file == null ? void 0 : file.parent;
     if (checking) return !!folder;
-    if (folder) void diagnostics.guard("main.background_12", () => this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => !folder.parent || candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path)));
-    else new import_obsidian11.Notice("Open a Markdown note first to scan its folder.");
+    if (folder) void diagnostics.guard("main.background_12", () => this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path)));
     return true;
   }
   addScanMenuItem(menu, paths, title) {
@@ -3464,11 +3199,11 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     }));
   }
   addFileMenuItems(menu, file) {
-    if (file instanceof import_obsidian11.TFile && file.extension.toLowerCase() === "md") {
+    if (file instanceof import_obsidian10.TFile && file.extension.toLowerCase() === "md") {
       this.addScanMenuItem(menu, [file.path], "Cairn: Scan this note");
       return;
     }
-    if (file instanceof import_obsidian11.TFolder) {
+    if (file instanceof import_obsidian10.TFolder) {
       const paths = selectedFiles([file], markdownFile).map((note) => note.path);
       this.addScanMenuItem(menu, paths, "Cairn: Scan this folder");
     }
@@ -3478,36 +3213,25 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     this.addScanMenuItem(menu, [...paths], `Cairn: Scan ${paths.size} selected note${paths.size === 1 ? "" : "s"}`);
   }
   async runScan(scopePaths, incremental = false) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e;
     const diagnosticEnd9 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.runScan")) != null ? _c : (() => {
     });
     try {
-      if (this.repairApplying) {
-        new import_obsidian11.Notice("Wait for the current repair or rollback to finish before scanning.");
-        return;
-      }
       if (this.scanAbort) {
-        new import_obsidian11.Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
+        new import_obsidian10.Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
         return;
       }
+      await this.openDashboard();
       this.scanAbort = new AbortController();
-      try {
-        await this.openDashboard();
-      } catch (error) {
-        this.scanAbort = null;
-        throw error;
-      }
       const view = this.getView();
       view == null ? void 0 : view.setProgress({ phase: "indexing", currentPath: "", scanned: 0, total: 0, findings: 0 });
       try {
-        const result = await scanVault(this.reader, this.settings, scopePaths, incremental, this.scanAbort.signal, (progress) => view == null ? void 0 : view.setProgress(progress), this.lastFindings, this.reportNeedsScan ? void 0 : this.lastScan);
+        const result = await scanVault(this.reader, this.settings, scopePaths, incremental, this.scanAbort.signal, (progress) => view == null ? void 0 : view.setProgress(progress), this.lastFindings);
         if (result.cancelled) {
-          new import_obsidian11.Notice(`Cairn scan cancelled after ${result.filesScanned} file(s).`);
+          new import_obsidian10.Notice(`Cairn scan cancelled after ${result.filesScanned} file(s).`);
           return;
         }
-        this.comparisonDelta = !this.reportNeedsScan && !result.errors.length && !((_d = this.lastScan) == null ? void 0 : _d.errors.length) && !!result.comparisonKey && ((_e = this.lastScan) == null ? void 0 : _e.comparisonKey) === result.comparisonKey ? findingCounts(result.findings).total - findingCounts(this.lastFindings).total : null;
         this.lastScan = result;
-        this.reportNeedsScan = false;
         this.lastErrors = result.errors;
         const fullFindings = applyIgnoredFindings(result.findings, this.settings.ignoredFindings);
         this.scanPreview = { id: jobId(), result, findings: fullFindings, revealed: true };
@@ -3521,18 +3245,18 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         this.settings.lastScanFileCount = result.filesScanned;
         this.settings.lastScanDurationMs = result.durationMs;
         this.settings.lastFileSignatures = result.signatures;
-        await this.saveData(this.settings);
+        if (this.settings.billingAccountLinked) await this.saveData(this.settings);
         await this.refreshDashboard();
-        new import_obsidian11.Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
+        new import_obsidian10.Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
       } catch (error) {
         diagnostics.failure("main.caught_15", error);
-        new import_obsidian11.Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
+        new import_obsidian10.Notice(`Cairn scan failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.scanAbort = null;
         view == null ? void 0 : view.setProgress(null);
       }
     } catch (diagnosticError9) {
-      (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "main.runScan", diagnosticError9);
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.runScan", diagnosticError9);
       throw diagnosticError9;
     } finally {
       diagnosticEnd9();
@@ -3542,7 +3266,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     var _a;
     const diagnosticAction10 = () => {
       if (!this.scanAbort) {
-        new import_obsidian11.Notice("No Cairn scan is active.");
+        new import_obsidian10.Notice("No Cairn scan is active.");
         return;
       }
       this.scanAbort.abort();
@@ -3564,9 +3288,10 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         const diagnosticEnd12 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "main.background.12634")) != null ? _c2 : (() => {
         });
         try {
-          const key = scope === "finding" ? finding.id : scope === "source" ? finding.sourcePath : sourceFolder(finding.sourcePath) || "/";
-          this.settings.ignoredFindings = [...this.settings.ignoredFindings.filter((item) => item.key !== key || item.scope !== scope), { key, reason, scope, createdAt: (/* @__PURE__ */ new Date()).toISOString() }];
-          await this.refreshIgnoreRules();
+          this.settings.ignoredFindings = [...this.settings.ignoredFindings.filter((item) => item.key !== finding.id), { key: scope === "finding" ? finding.id : scope === "source" ? finding.sourcePath : finding.sourcePath.split("/")[0], reason, scope, createdAt: (/* @__PURE__ */ new Date()).toISOString() }];
+          this.lastFindings = applyIgnoredFindings(this.lastFindings, this.settings.ignoredFindings);
+          await this.saveData(this.settings);
+          await this.refreshDashboard();
         } catch (diagnosticError12) {
           (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "main.background.12634", diagnosticError12);
           throw diagnosticError12;
@@ -3581,61 +3306,14 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
       diagnosticEnd11();
     }
   }
-  async refreshIgnoreRules() {
-    this.lastFindings = applyIgnoredFindings(this.lastFindings, this.settings.ignoredFindings);
-    if (this.scanPreview) this.scanPreview.findings = this.lastFindings;
-    this.comparisonDelta = null;
-    await this.saveData(this.settings);
-    await this.refreshDashboard();
-  }
-  async restoreFinding(finding) {
-    this.settings.ignoredFindings = this.settings.ignoredFindings.filter((item) => !ignoreRuleMatches(finding, item));
-    await this.refreshIgnoreRules();
-    new import_obsidian11.Notice("Matching ignore rules removed. Other findings covered by those rules are restored too.");
-  }
-  async openFinding(finding) {
-    const file = this.app.vault.getAbstractFileByPath(finding.sourcePath) || this.sourceFiles.get(finding.sourcePath);
-    if (!(file instanceof import_obsidian11.TFile) || this.app.vault.getAbstractFileByPath(file.path) !== file) {
-      new import_obsidian11.Notice(`The note ${finding.sourcePath} is missing. Run a new scan to locate current findings.`);
-      return;
-    }
-    try {
-      const leaf = this.app.workspace.getLeavesOfType("markdown").find((item) => item.view instanceof import_obsidian11.MarkdownView && item.view.file === file) || this.app.workspace.getLeaf("tab");
-      await leaf.openFile(file, { eState: { line: Math.max(0, finding.line - 1) } });
-      if (leaf.view instanceof import_obsidian11.MarkdownView) {
-        const line = Math.max(0, Math.min(finding.line - 1, leaf.view.editor.lineCount() - 1));
-        leaf.view.editor.setCursor({ line, ch: 0 });
-        leaf.view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 0 } }, true);
-      }
-      await this.app.workspace.revealLeaf(leaf);
-      if (file.path !== finding.sourcePath) new import_obsidian11.Notice(`Opened renamed note ${file.path}. Run a new scan to refresh its findings.`);
-    } catch (error) {
-      diagnostics.failure("main.openFinding", error);
-      new import_obsidian11.Notice(`Could not open ${file.path}. Run a new scan and try again.`);
-    }
-  }
-  reportScope() {
-    var _a;
-    const scope = (_a = this.lastScan) == null ? void 0 : _a.scope;
-    if (!scope) return "No current report";
-    return scope.kind === "vault" ? "Full vault (eligible notes)" : `Selected notes (${scope.paths.length}): ${scope.paths.join(", ") || "none"}`;
-  }
-  reportIsStale() {
-    var _a;
-    return this.reportNeedsScan || !!((_a = this.lastScan) == null ? void 0 : _a.settingsKey) && this.lastScan.settingsKey !== scanSettingsKey(this.settings);
-  }
   async reviewRepairs(findings) {
     var _a, _b, _c, _d, _e;
     const diagnosticEnd13 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.reviewRepairs")) != null ? _c : (() => {
     });
     try {
-      if (this.reportIsStale()) {
-        new import_obsidian11.Notice("Run a new scan before applying repairs. The report needs updating.");
-        return;
-      }
       const candidates = findings.filter((finding) => finding.repair && !finding.ignored);
       if (!candidates.length) {
-        new import_obsidian11.Notice("There are no exact, reviewable repairs in the current results.");
+        new import_obsidian10.Notice("There are no exact, reviewable repairs in the current results.");
         return;
       }
       const grouped = /* @__PURE__ */ new Map();
@@ -3643,10 +3321,10 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
       const plans = [];
       for (const [path, fileFindings] of grouped) {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian11.TFile)) continue;
+        if (!(file instanceof import_obsidian10.TFile)) continue;
         const before = this.scannedSources.get(path);
         if (before === void 0 || await this.app.vault.read(file) !== before) {
-          new import_obsidian11.Notice("The source changed since the scan. Your original report is saved. Run a new scan before applying repairs.");
+          new import_obsidian10.Notice("The source changed since the scan. Your original report is saved. Run a new scan before applying repairs.");
           continue;
         }
         const proposals = fileFindings.map((finding) => finding.repair);
@@ -3654,10 +3332,26 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         if (after !== before) plans.push({ path, before, after, proposals });
       }
       if (!plans.length) {
-        new import_obsidian11.Notice("Cairn found no note changes to apply. Nothing was charged.");
+        new import_obsidian10.Notice("Cairn found no note changes to apply. Nothing was charged.");
         return;
       }
-      new RepairPreviewModal(this.app, plans, (selected) => void diagnostics.guard("main.background_16", () => this.applyRepairPlans(selected)), this.settings).open();
+      if (this.settings.reviewBeforeApply) {
+        new RepairPreviewModal(this.app, plans, (selected) => void diagnostics.guard("main.background_16", () => this.applyRepairPlans(selected)), async () => {
+          var _a2, _b2, _c2, _d2, _e2;
+          const diagnosticEnd14 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "main.background.14551")) != null ? _c2 : (() => {
+          });
+          try {
+            return true;
+          } catch (diagnosticError14) {
+            (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "main.background.14551", diagnosticError14);
+            throw diagnosticError14;
+          } finally {
+            diagnosticEnd14();
+          }
+        }).open();
+      } else {
+        await this.applyRepairPlans(plans);
+      }
     } catch (diagnosticError13) {
       (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.reviewRepairs", diagnosticError13);
       throw diagnosticError13;
@@ -3666,20 +3360,12 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     }
   }
   async applyRepairPlans(plans) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e;
     const diagnosticEnd15 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.applyRepairPlans")) != null ? _c : (() => {
     });
     try {
-      if (this.reportIsStale()) {
-        new import_obsidian11.Notice("Run a new scan before applying repairs.");
-        return;
-      }
-      if (this.scanAbort) {
-        new import_obsidian11.Notice("Wait for the current scan to finish before applying repairs.");
-        return;
-      }
       if (this.repairApplying) {
-        new import_obsidian11.Notice("Cairn is already applying a repair batch.");
+        new import_obsidian10.Notice("Cairn is already applying a repair batch.");
         return;
       }
       this.repairApplying = true;
@@ -3688,7 +3374,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         const skipped = [];
         for (const plan of plans) {
           const file = this.app.vault.getAbstractFileByPath(plan.path);
-          if (!(file instanceof import_obsidian11.TFile)) {
+          if (!(file instanceof import_obsidian10.TFile)) {
             skipped.push(plan.path);
             continue;
           }
@@ -3700,7 +3386,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
           readyPlans.push(plan);
         }
         if (!hasWritableRepairPlans(readyPlans)) {
-          new import_obsidian11.Notice(`Cairn repair skipped ${skipped.length} file(s); there were no note changes to apply. Nothing was charged.`);
+          new import_obsidian10.Notice(`Cairn repair skipped ${skipped.length} file(s); there were no note changes to apply. Nothing was charged.`);
           return;
         }
         const journal = { batchId: `cairn-${Date.now()}`, createdAt: (/* @__PURE__ */ new Date()).toISOString(), entries: readyPlans.map((plan) => ({ path: plan.path, before: plan.before, after: plan.after })) };
@@ -3732,28 +3418,20 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
         })))) return;
         const changed = [];
         const failed = [];
-        const unwritten = [];
         for (const plan of readyPlans) {
           try {
             const file = this.app.vault.getAbstractFileByPath(plan.path);
-            if (!(file instanceof import_obsidian11.TFile)) {
+            if (!(file instanceof import_obsidian10.TFile)) {
               skipped.push(plan.path);
-              unwritten.push(plan.path);
               continue;
             }
             const current = await this.app.vault.read(file);
             if (current !== plan.before) {
               skipped.push(plan.path);
-              unwritten.push(plan.path);
               continue;
             }
-            this.reportNeedsScan = true;
-            this.comparisonDelta = null;
             await this.app.vault.process(file, (latest) => {
-              if (latest !== plan.before) {
-                unwritten.push(plan.path);
-                throw new Error("The source changed. Your original preview is saved.");
-              }
+              if (latest !== plan.before) throw new Error("The source changed. Your original preview is saved.");
               return plan.after;
             });
             if (await this.app.vault.read(file) !== plan.after) throw new Error("The repair could not be confirmed. Recovery data is saved. Check the note before retrying.");
@@ -3763,33 +3441,23 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
             failed.push(`${plan.path}: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
-        await ((_d = reservation.completeWrites) == null ? void 0 : _d.call(reservation, unwritten));
         if (!changed.length) {
           await reservation.rollback();
-          const unchanged = await Promise.all(readyPlans.map(async (plan) => {
-            try {
-              return await this.app.vault.adapter.read(plan.path) === plan.before;
-            } catch (e) {
-              return false;
-            }
-          }));
-          if (unchanged.every(Boolean)) await restoreJournal();
+          await restoreJournal();
         } else {
           const billingResult = await reservation.commit();
-          if (billingResult.kind === "pending") new import_obsidian11.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
+          if (billingResult.kind === "pending") new import_obsidian10.Notice("Cairn repair applied. Billing is pending and will retry automatically.");
         }
-        new import_obsidian11.Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
+        new import_obsidian10.Notice(`Cairn repair complete: ${changed.length} changed, ${skipped.length} skipped, ${failed.length} failed. Rollback is available.`);
         await this.refreshDashboard();
       } catch (error) {
         diagnostics.failure("main.caught_19", error);
-        await this.refreshDashboard();
-        new import_obsidian11.Notice(`Cairn repair could not be applied: ${error instanceof Error ? error.message : String(error)}`);
+        new import_obsidian10.Notice(`Cairn repair could not be applied: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
-        this.nativeWriting = false;
         this.repairApplying = false;
       }
     } catch (diagnosticError15) {
-      (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "main.applyRepairPlans", diagnosticError15);
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.applyRepairPlans", diagnosticError15);
       throw diagnosticError15;
     } finally {
       diagnosticEnd15();
@@ -3803,18 +3471,13 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     const diagnosticEnd17 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.rollbackLastRepair")) != null ? _c : (() => {
     });
     try {
-      if (this.repairApplying || this.scanAbort) {
-        new import_obsidian11.Notice("Wait for the current scan, repair or rollback to finish.");
-        return;
-      }
-      this.repairApplying = true;
       try {
         const journal = JSON.parse(await this.app.vault.adapter.read(this.journalPath()));
         const rolledBack = [];
         const skipped = [];
         for (const entry of journal.entries) {
           const file = this.app.vault.getAbstractFileByPath(entry.path);
-          if (!(file instanceof import_obsidian11.TFile)) {
+          if (!(file instanceof import_obsidian10.TFile)) {
             skipped.push(entry.path);
             continue;
           }
@@ -3823,23 +3486,14 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
             skipped.push(entry.path);
             continue;
           }
-          this.reportNeedsScan = true;
-          this.comparisonDelta = null;
-          await this.app.vault.process(file, (latest) => {
-            if (!canRollback(latest, entry.after)) throw new Error("The note changed before rollback. Newer edits were preserved.");
-            return entry.before;
-          });
-          if (await this.app.vault.read(file) !== entry.before) throw new Error("Rollback could not be verified. Recovery data is saved.");
+          await this.app.vault.modify(file, entry.before);
           rolledBack.push(entry.path);
         }
-        new import_obsidian11.Notice(`Cairn rollback: ${rolledBack.length} restored, ${skipped.length} skipped to protect newer edits.`);
+        new import_obsidian10.Notice(`Cairn rollback: ${rolledBack.length} restored, ${skipped.length} skipped to protect newer edits.`);
         await this.refreshDashboard();
       } catch (error) {
         diagnostics.failure("main.caught_20", error);
-        await this.refreshDashboard();
-        new import_obsidian11.Notice(`Cairn rollback could not finish: ${error instanceof Error ? error.message : String(error)}`);
-      } finally {
-        this.repairApplying = false;
+        new import_obsidian10.Notice(`No recoverable Cairn repair batch was found: ${error instanceof Error ? error.message : String(error)}`);
       }
     } catch (diagnosticError17) {
       (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.rollbackLastRepair", diagnosticError17);
@@ -3854,7 +3508,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     });
     try {
       if (!this.lastScan) {
-        new import_obsidian11.Notice("Run a scan before exporting a report.");
+        new import_obsidian10.Notice("Run a scan before exporting a report.");
         return;
       }
       if (!await this.revealReport()) return;
@@ -3869,7 +3523,7 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
           const extension = format === "markdown" ? "md" : format;
           const path = `${folder}/cairn-report-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.${extension}`;
           await this.app.vault.create(path, content);
-          new import_obsidian11.Notice(`Cairn report exported to ${path}.`);
+          new import_obsidian10.Notice(`Cairn report exported to ${path}.`);
         } catch (diagnosticError19) {
           (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "main.createReport", diagnosticError19);
           throw diagnosticError19;
@@ -3887,9 +3541,9 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     }
   }
   markdownReport() {
-    var _a, _b;
+    var _a;
     const counts = findingCounts(this.lastFindings);
-    const lines = [`# Cairn Vault Linter report`, ``, `- Scanned: ${this.settings.lastScanAt}`, `- Scope: ${this.reportScope()}`, `- Report needs scan: ${this.reportIsStale()}`, `- Notes indexed: ${((_a = this.lastScan) == null ? void 0 : _a.notesIndexed) || 0}`, `- Files scanned: ${((_b = this.lastScan) == null ? void 0 : _b.filesScanned) || 0}`, `- Findings: ${counts.total} (${counts.high} high)`, ``];
+    const lines = [`# Cairn Vault Linter report`, ``, `- Scanned: ${this.settings.lastScanAt}`, `- Files scanned: ${((_a = this.lastScan) == null ? void 0 : _a.filesScanned) || 0}`, `- Findings: ${counts.total} (${counts.high} high)`, ``];
     const groups = /* @__PURE__ */ new Map();
     this.lastFindings.forEach((finding) => groups.set(finding.sourcePath, [...groups.get(finding.sourcePath) || [], finding]));
     groups.forEach((findings, path) => {
@@ -3901,17 +3555,15 @@ var CairnVaultLinterPlugin = class extends import_obsidian11.Plugin {
     return lines.join("\n");
   }
   csvReport() {
-    const header = ["id", "type", "severity", "source", "line", "section", "target", "resolved", "ignored", "context", "explanation", "scan_scope", "report_needs_scan"];
-    const rows = this.lastFindings.map((finding) => [finding.id, finding.type, finding.severity, finding.sourcePath, String(finding.line), finding.section, finding.target, String(finding.resolved), String(!!finding.ignored), finding.context, finding.explanation, this.reportScope(), String(this.reportIsStale())]);
-    if (!rows.length) rows.push([...Array(11).fill(""), this.reportScope(), String(this.reportIsStale())]);
-    return [header, ...rows].map((row) => row.map(escapeCsv).join(",")).join("\n");
+    const header = ["id", "type", "severity", "source", "line", "section", "target", "resolved", "ignored", "context", "explanation"];
+    return [header, ...this.lastFindings.map((finding) => [finding.id, finding.type, finding.severity, finding.sourcePath, String(finding.line), finding.section, finding.target, String(finding.resolved), String(!!finding.ignored), finding.context, finding.explanation])].map((row) => row.map(escapeCsv).join(",")).join("\n");
   }
   jsonReport() {
-    var _a, _b, _c;
-    return JSON.stringify({ generatedAt: (/* @__PURE__ */ new Date()).toISOString(), summary: { scope: (_a = this.lastScan) == null ? void 0 : _a.scope, scopeLabel: this.reportScope(), needsScan: this.reportIsStale(), notesIndexed: ((_b = this.lastScan) == null ? void 0 : _b.notesIndexed) || 0, filesScanned: ((_c = this.lastScan) == null ? void 0 : _c.filesScanned) || 0, ...findingCounts(this.lastFindings) }, findings: this.lastFindings, errors: this.lastErrors }, null, 2);
+    var _a;
+    return JSON.stringify({ generatedAt: (/* @__PURE__ */ new Date()).toISOString(), summary: { filesScanned: ((_a = this.lastScan) == null ? void 0 : _a.filesScanned) || 0, ...findingCounts(this.lastFindings) }, findings: this.lastFindings, errors: this.lastErrors }, null, 2);
   }
 };
-var CairnView = class extends import_obsidian11.ItemView {
+var CairnView = class extends import_obsidian10.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     __publicField(this, "plugin");
@@ -3920,9 +3572,6 @@ var CairnView = class extends import_obsidian11.ItemView {
     __publicField(this, "severityFilter", "all");
     __publicField(this, "folderFilter", "all");
     __publicField(this, "stateFilter", "unresolved");
-    __publicField(this, "scanScope", "vault");
-    __publicField(this, "filtersOpen", false);
-    __publicField(this, "suggestionsOpen", false);
     this.plugin = plugin;
   }
   getViewType() {
@@ -3955,95 +3604,59 @@ var CairnView = class extends import_obsidian11.ItemView {
   }
   setProgress(progress) {
     this.progress = progress;
-    const existing = this.contentEl.querySelector(".cairn-progress");
-    if (progress && existing) {
-      const title = existing.querySelector("strong");
-      const text = existing.querySelector("p");
-      const bar = existing.querySelector("progress");
-      if (title) title.textContent = `Scanning ${progress.phase}...`;
-      if (text) text.textContent = progress.phase === "reading" || progress.phase === "indexing" ? `Reading notes for target indexing${progress.currentPath ? `: ${progress.currentPath}` : ""}` : `${progress.scanned}/${progress.total} notes checked, ${progress.findings} findings${progress.currentPath ? `: ${progress.currentPath}` : ""}`;
-      if (bar) {
-        bar.max = progress.total || 1;
-        bar.value = Math.min(progress.scanned, bar.max);
-      }
-      return;
-    }
     this.render();
   }
   render() {
     var _a;
     const diagnosticAction22 = () => {
       const root = this.contentEl;
-      const scrollTop = root.scrollTop;
       root.empty();
       root.addClass("cairn-view");
       const heading = root.createEl("h1", { text: "Cairn Vault Linter" });
       heading.setAttr("tabindex", "-1");
-      root.createEl("p", { text: "Find broken links. Scanning never changes your notes." }).addClass("cairn-subtitle");
+      root.createEl("p", { text: "A local, reviewable health report for links, references, and dangling notes. Scanning never edits vault content." }).addClass("cairn-subtitle");
       const actions = root.createDiv({ cls: "cairn-actions" });
-      this.select(actions, "Scan scope", this.scanScope, ["vault", "note", "folder", "changed"], (value) => {
-        this.scanScope = value;
-      });
-      this.button(actions, "Scan", () => {
-        if (this.scanScope === "note") this.plugin.scanCurrentNote(false);
-        else if (this.scanScope === "folder") this.plugin.scanCurrentFolder(false);
-        else void this.plugin.runScan(void 0, this.scanScope === "changed");
-      }, true, !this.plugin.scanAbort);
-      if (this.plugin.scanAbort) this.button(actions, "Cancel scan", () => this.plugin.cancelScan());
-      if (this.leaf.getRoot() !== this.app.workspace.rootSplit) this.button(actions, "Open in tab", () => void this.plugin.openDashboard(true));
+      this.button(actions, "Scan full vault", () => void diagnostics.guard("main.background_24", () => this.plugin.runScan()), true);
+      this.button(actions, "Changed notes", () => void diagnostics.guard("main.background_25", () => this.plugin.runScan(void 0, true)));
+      this.button(actions, "Current note", () => this.plugin.scanCurrentNote(false));
+      this.button(actions, "Current folder", () => this.plugin.scanCurrentFolder(false));
+      this.button(actions, "Cancel", () => this.plugin.cancelScan(), false, !!this.plugin.scanAbort);
+      this.button(actions, "Rollback last repair", () => void diagnostics.guard("main.background_26", () => this.plugin.rollbackLastRepair()));
       if (this.progress) {
         const progress = root.createDiv({ cls: "cairn-progress" });
         progress.setAttr("role", "status");
         progress.setAttr("aria-live", "polite");
         progress.createEl("strong", { text: `Scanning ${this.progress.phase}\u2026` });
-        progress.createEl("p", { text: this.progress.phase === "reading" || this.progress.phase === "indexing" ? `Reading notes for target indexing${this.progress.currentPath ? `: ${this.progress.currentPath}` : ""}` : `${this.progress.scanned}/${this.progress.total} notes checked, ${this.progress.findings} findings${this.progress.currentPath ? `: ${this.progress.currentPath}` : ""}` });
+        progress.createEl("p", { text: `${this.progress.scanned}/${this.progress.total || "?"} files \xB7 ${this.progress.findings} findings${this.progress.currentPath ? ` \xB7 ${this.progress.currentPath}` : ""}` });
         const bar = progress.createEl("progress");
         bar.max = this.progress.total || 1;
         bar.value = Math.min(this.progress.scanned, bar.max);
         bar.setAttr("aria-label", "Cairn scan progress");
       }
-      if (this.plugin.lastScan) {
-        const scope = root.createEl("details", { cls: "cairn-report-details" });
-        scope.createEl("summary", { text: `${this.plugin.lastScan.filesScanned} note${this.plugin.lastScan.filesScanned === 1 ? "" : "s"} checked. Scan details` });
-        scope.createEl("p", { text: `Scope: ${this.plugin.reportScope()}. ${this.plugin.lastScan.notesIndexed || 0} notes read for indexing${this.plugin.lastScan.incremental ? "; unchanged findings retained" : ""}.` });
-      }
-      if (this.plugin.reportIsStale()) {
-        const stale = root.createDiv({ attr: { role: "status" } });
-        stale.createEl("p", { text: "This report needs a new scan after note changes or changed check settings. Related findings may still be listed. Repair actions are paused." });
-        this.button(stale, "Rescan this report", () => void this.plugin.rescanReport(), true);
-      }
       this.renderSummary(root);
-      const recovery = root.createDiv({ cls: "cairn-recovery" });
-      this.button(recovery, "Undo last repair", () => void this.plugin.rollbackLastRepair());
       if (this.plugin.lastFindings.length || this.plugin.lastErrors.length) this.renderResults(root);
-      else root.createEl("p", { text: this.plugin.lastScan ? "No findings in the checked scope." : "Run a scan to see grouped findings and safe repair options." }).addClass("cairn-empty");
-      root.createEl("small", { text: `Cairn Vault Linter ${this.plugin.manifest.version}` });
-      root.scrollTop = scrollTop;
+      else root.createEl("p", { text: "Run a scan to see grouped findings and safe repair options." }).addClass("cairn-empty");
     };
     return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.render", diagnosticAction22) : diagnosticAction22();
   }
   renderSummary(root) {
     var _a;
     const diagnosticAction23 = () => {
-      if (!this.plugin.lastScan) return;
-      const active = this.plugin.lastFindings.filter((finding) => !finding.ignored);
-      const suggestions = active.filter((finding) => finding.type === "duplicate-link").length;
-      const problems = active.length - suggestions;
-      root.createEl("p", { cls: "cairn-summary", attr: { role: "status" }, text: `${problems} ${problems === 1 ? "needs" : "need"} attention${suggestions ? `, ${suggestions} optional suggestions` : ""}${this.plugin.comparisonDelta === null ? "." : this.plugin.comparisonDelta === 0 ? ". No change." : `. ${this.plugin.comparisonDelta > 0 ? "+" : ""}${this.plugin.comparisonDelta} since the previous scan of this scope.`}` });
+      var _a2;
+      const counts = findingCounts(this.plugin.lastFindings);
+      const grid = root.createDiv({ cls: "cairn-summary", attr: { role: "region", "aria-label": "Scan summary" } });
+      const trend = this.plugin.settings.lastScanFindingCount - this.plugin.settings.previousFindingCount;
+      this.metric(grid, "Findings", String(counts.total), trend ? `${trend > 0 ? "+" : ""}${trend} since previous scan` : "No previous comparison");
+      this.metric(grid, "High severity", String(counts.high), "Needs attention first");
+      this.metric(grid, "Files scanned", String(((_a2 = this.plugin.lastScan) == null ? void 0 : _a2.filesScanned) || this.plugin.settings.lastScanFileCount || 0), this.plugin.settings.lastScanAt ? new Date(this.plugin.settings.lastScanAt).toLocaleString() : "Not scanned yet");
+      this.metric(grid, "Ignored", String(counts.ignored), "Ignored findings remain reviewable");
     };
     return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.renderSummary", diagnosticAction23) : diagnosticAction23();
   }
   renderResults(root) {
     var _a;
     const diagnosticAction24 = () => {
-      const findings = this.filteredFindings();
-      const filterDetails = root.createEl("details", { cls: "cairn-filter-details" });
-      filterDetails.open = this.filtersOpen;
-      filterDetails.createEl("summary", { text: `Filters (${findings.length} shown)` });
-      filterDetails.ontoggle = () => {
-        this.filtersOpen = filterDetails.open;
-      };
-      const toolbar = filterDetails.createDiv({ cls: "cairn-filters" });
+      const toolbar = root.createDiv({ cls: "cairn-filters" });
       this.select(toolbar, "Finding type", this.typeFilter, ["all", ...Object.keys(FINDING_LABELS)], (value) => {
         this.typeFilter = value;
         this.render();
@@ -4061,30 +3674,15 @@ var CairnView = class extends import_obsidian11.ItemView {
         this.stateFilter = value;
         this.render();
       });
-      const repairable = findings.filter((finding) => finding.repair && !finding.ignored);
-      const actions = root.createDiv({ cls: "cairn-actions" });
-      if (repairable.length) this.button(actions, `Review ${repairable.length} repair${repairable.length === 1 ? "" : "s"}`, () => void this.plugin.reviewRepairs(findings), true, !this.plugin.reportIsStale());
-      this.button(actions, "Export report", () => void this.plugin.exportReport(this.plugin.settings.defaultReportFormat));
-      const suggestions = root.createEl("details", { cls: "cairn-suggestions" });
-      const optionalCount = findings.filter((finding) => finding.type === "duplicate-link").length;
-      suggestions.hidden = optionalCount === 0;
-      suggestions.open = this.suggestionsOpen;
-      suggestions.createEl("summary", { text: `Repeated links (${optionalCount} optional suggestions)` });
-      suggestions.ontoggle = () => {
-        this.suggestionsOpen = suggestions.open;
-      };
-      const issues = root.createDiv({ cls: "cairn-issues" });
-      root.insertBefore(issues, suggestions);
+      const exportButton = this.button(toolbar, "Export report", () => void diagnostics.guard("main.background_27", () => this.plugin.exportReport(this.plugin.settings.defaultReportFormat)));
+      exportButton.setAttr("aria-label", "Export the current Cairn report");
+      this.button(toolbar, this.plugin.settings.reviewBeforeApply ? "Review safe repairs" : "Apply safe repairs", () => void diagnostics.guard("main.background_28", () => this.plugin.reviewRepairs(this.filteredFindings())));
+      const findings = this.filteredFindings();
+      root.createEl("p", { text: `${findings.length} finding(s) shown${this.plugin.lastErrors.length ? ` \xB7 ${this.plugin.lastErrors.length} unreadable file(s)` : ""}` }).addClass("cairn-filter-summary");
       const groups = /* @__PURE__ */ new Map();
-      const rank = { high: 0, medium: 1, low: 2, info: 3 };
-      [...findings].sort((a, b) => rank[a.severity] - rank[b.severity] || a.sourcePath.localeCompare(b.sourcePath) || a.line - b.line).forEach((finding) => {
-        const key = `${finding.type === "duplicate-link" ? "suggestion" : "issue"}:${finding.sourcePath}`;
-        groups.set(key, [...groups.get(key) || [], finding]);
-      });
-      groups.forEach((group) => {
-        const path = group[0].sourcePath;
-        const parent = group[0].type === "duplicate-link" ? suggestions : issues;
-        const details = parent.createEl("details", { cls: "cairn-source-group" });
+      findings.forEach((finding) => groups.set(finding.sourcePath, [...groups.get(finding.sourcePath) || [], finding]));
+      groups.forEach((group, path) => {
+        const details = root.createEl("details", { cls: "cairn-source-group" });
         details.open = true;
         details.createEl("summary", { text: `${path} (${group.length})` });
         group.forEach((finding) => this.renderFinding(details, finding));
@@ -4104,7 +3702,7 @@ var CairnView = class extends import_obsidian11.ItemView {
     var _a;
     const diagnosticAction25 = () => {
       const card = parent.createDiv({ cls: `cairn-finding cairn-${finding.severity}` });
-      const title = card.createEl("h3", { text: `${finding.type === "duplicate-link" ? "Repeated link (optional)" : FINDING_LABELS[finding.type]} \xB7 line ${finding.line}` });
+      const title = card.createEl("h3", { text: `${FINDING_LABELS[finding.type]} \xB7 line ${finding.line}` });
       title.setAttr("tabindex", "0");
       const badge = title.createSpan({ cls: "cairn-badge", text: SEVERITY_LABELS[finding.severity] });
       badge.setAttr("aria-label", `${SEVERITY_LABELS[finding.severity]} severity`);
@@ -4112,16 +3710,10 @@ var CairnView = class extends import_obsidian11.ItemView {
       const meta = card.createEl("p", { cls: "cairn-meta" });
       meta.createEl("code", { text: finding.target || "(no target)" });
       meta.appendText(` \xB7 ${finding.section} \xB7 ${finding.ignored ? `Ignored: ${finding.ignoredReason}` : finding.resolved ? "Resolved target" : "Unresolved"}`);
-      if (finding.context) {
-        const context = card.createEl("details", { cls: "cairn-context-details" });
-        context.createEl("summary", { text: "Show context" });
-        context.createEl("pre", { text: finding.context }).addClass("cairn-context");
-      }
+      if (finding.context) card.createEl("pre", { text: finding.context }).addClass("cairn-context");
       const buttons = card.createDiv({ cls: "cairn-finding-actions" });
-      this.button(buttons, "Open note", () => void this.plugin.openFinding(finding));
-      if (finding.repair && !finding.ignored && !this.plugin.reportIsStale()) this.button(buttons, "Review repair", () => void diagnostics.guard("main.background_29", () => this.plugin.reviewRepairs([finding])), true);
-      if (finding.ignored) this.button(buttons, "Restore finding", () => void this.plugin.restoreFinding(finding));
-      else this.button(buttons, "Ignore...", () => void diagnostics.guard("main.background_30", () => this.plugin.ignoreFinding(finding)));
+      if (finding.repair && !finding.ignored) this.button(buttons, this.plugin.settings.reviewBeforeApply ? "Preview exact repair" : "Apply exact repair", () => void diagnostics.guard("main.background_29", () => this.plugin.reviewRepairs([finding])), true);
+      this.button(buttons, finding.ignored ? "Keep ignored" : "Ignore\u2026", () => void diagnostics.guard("main.background_30", () => this.plugin.ignoreFinding(finding)));
     };
     return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.renderFinding", diagnosticAction25) : diagnosticAction25();
   }
@@ -4137,7 +3729,7 @@ var CairnView = class extends import_obsidian11.ItemView {
     const labelEl = wrapper.createEl("label", { text: label2, attr: { for: id } });
     labelEl.addClass("cairn-filter-label");
     const select = wrapper.createEl("select", { attr: { id } });
-    options.forEach((option) => select.createEl("option", { text: { vault: "Full vault", note: "Current note", folder: "Current folder", changed: "Changed notes" }[option] || (option === "all" ? "All" : FINDING_LABELS[option] || SEVERITY_LABELS[option] || option), value: option }));
+    options.forEach((option) => select.createEl("option", { text: option === "all" ? "All" : FINDING_LABELS[option] || SEVERITY_LABELS[option] || option, value: option }));
     select.value = value;
     select.onchange = diagnostics.wrap("main.filter_changed", () => onChange(select.value));
   }
@@ -4149,7 +3741,7 @@ var CairnView = class extends import_obsidian11.ItemView {
     return button;
   }
 };
-var IgnoreModal = class extends import_obsidian11.Modal {
+var IgnoreModal = class extends import_obsidian10.Modal {
   constructor(app, finding, onSave) {
     super(app);
     __publicField(this, "finding", finding);
@@ -4164,7 +3756,7 @@ var IgnoreModal = class extends import_obsidian11.Modal {
         contentEl.createEl("h2", { text: "Ignore finding" });
         contentEl.createEl("p", { text: `${this.finding.sourcePath}:${this.finding.line} \xB7 ${this.finding.explanation}` });
         let reason = "";
-        new import_obsidian11.Setting(contentEl).setName("Reason").setDesc("Keep a short local explanation for future reviews.").addText((text) => {
+        new import_obsidian10.Setting(contentEl).setName("Reason").setDesc("Keep a short local explanation for future reviews.").addText((text) => {
           text.setPlaceholder("Intentional link, generated note, etc.");
           text.onChange((value) => {
             return diagnostics.guard("main.control_33", () => {
@@ -4175,7 +3767,7 @@ var IgnoreModal = class extends import_obsidian11.Modal {
           });
         });
         let scope = "finding";
-        new import_obsidian11.Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: `This source note: ${this.finding.sourcePath}`, folder: sourceFolder(this.finding.sourcePath) ? `This source folder: ${sourceFolder(this.finding.sourcePath)}/ (and descendants)` : "Root-level notes only (no subfolders)" }).setValue(scope).onChange((value) => {
+        new import_obsidian10.Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: "This source note", folder: "This source folder" }).setValue(scope).onChange((value) => {
           return diagnostics.guard("main.control_34", () => {
             var _a2;
             const diagnosticAction28 = () => scope = value;
@@ -4195,12 +3787,12 @@ var IgnoreModal = class extends import_obsidian11.Modal {
     });
   }
 };
-var RepairPreviewModal = class extends import_obsidian11.Modal {
-  constructor(app, plans, onApply, settings) {
+var RepairPreviewModal = class extends import_obsidian10.Modal {
+  constructor(app, plans, onApply, reveal) {
     super(app);
     __publicField(this, "plans", plans);
     __publicField(this, "onApply", onApply);
-    __publicField(this, "settings", settings);
+    __publicField(this, "reveal", reveal);
   }
   onOpen() {
     return diagnostics.guard("main.onOpen_36", () => {
@@ -4208,28 +3800,20 @@ var RepairPreviewModal = class extends import_obsidian11.Modal {
       const diagnosticAction29 = () => {
         const { contentEl } = this;
         contentEl.empty();
-        contentEl.createEl("h2", { text: "Review repairs" });
-        const edits = this.plans.reduce((total, plan) => total + plan.proposals.length, 0);
-        const credits = nativeCost("cairn-vault-linter", { files: this.plans.length, edits });
-        contentEl.createEl("p", { text: `${this.plans.length} file${this.plans.length === 1 ? "" : "s"}, ${edits} edit${edits === 1 ? "" : "s"}. Cost: ${credits} repair credit${credits === 1 ? "" : "s"}.` });
-        contentEl.createEl("p", { text: this.settings.billingAccountLinked ? `Last updated balance: ${Math.max(0, 5 - this.settings.freeRepairBatchesUsed)} free, ${Math.max(0, this.settings.purchasedRepairBatches)} purchased. Free credits are used first. Availability is checked when you apply.` : "Connect your account in Cairn settings before applying repairs. Scanning and review are free." });
-        const details = contentEl.createEl("details");
-        details.open = this.settings.reviewBeforeApply;
-        details.createEl("summary", { text: "Before and after changes" });
-        const preview = details.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}
+        contentEl.createEl("h2", { text: "Review exact repairs" });
+        contentEl.createEl("p", { text: `${this.plans.length} files will change after you choose Apply repairs. Recovery data is saved before changes are applied.` });
+        const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}
 ${diffPreview(plan.before, plan.after)}`).join("\n\n") });
         preview.setAttr("aria-label", "Before and after repair preview");
-        preview.addClass("cairn-repair-preview");
+        preview.style.maxHeight = "420px";
+        preview.style.overflow = "auto";
         const actions = contentEl.createDiv({ cls: "cairn-modal-actions" });
         const cancel = actions.createEl("button", { text: "Cancel" });
         cancel.onclick = diagnostics.wrap("main.dom_4", () => this.close());
-        const apply = actions.createEl("button", { text: `Apply for ${credits} credit${credits === 1 ? "" : "s"}` });
-        apply.disabled = !this.settings.billingAccountLinked;
+        const apply = actions.createEl("button", { text: "Apply repairs" });
         apply.addClass("mod-cta");
-        contentEl.createEl("p", { text: "Canceling uses no credits. Recovery data is saved before changes. Undo is free and preserves newer edits." });
+        contentEl.createEl("p", { text: "Review the changes before applying. One repair batch uses the free credits first, then purchased credits. Canceling this review uses no credits." });
         apply.onclick = diagnostics.wrap("main.dom_5", () => {
-          if (apply.disabled) return;
-          apply.disabled = true;
           this.close();
           this.onApply(this.plans);
         });
@@ -4238,7 +3822,7 @@ ${diffPreview(plan.before, plan.after)}`).join("\n\n") });
     });
   }
 };
-var ExportPreviewModal = class extends import_obsidian11.Modal {
+var ExportPreviewModal = class extends import_obsidian10.Modal {
   constructor(app, format, report2, onApply) {
     super(app);
     __publicField(this, "format", format);
@@ -4269,7 +3853,7 @@ var ExportPreviewModal = class extends import_obsidian11.Modal {
     });
   }
 };
-var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
+var CairnSettingTab = class extends import_obsidian10.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     __publicField(this, "plugin", plugin);
@@ -4292,7 +3876,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         const advanced = this.plugin.settings.settingsMode === "advanced";
         const diagnosticStage35 = (_k = (_j = (_i = diagnostics) == null ? void 0 : _i.start) == null ? void 0 : _j.call(_i, "settings.render.settings_mode")) != null ? _k : (() => {
         });
-        new import_obsidian11.Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday settings. Advanced adds scan rules, limits, and diagnostics.").addDropdown((dropdown) => dropdown.addOptions({ simple: "Simple", advanced: "Advanced \u2014 optional" }).setValue(advanced ? "advanced" : "simple").onChange(async (value) => {
+        new import_obsidian10.Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday settings. Advanced adds scan rules, limits, and diagnostics.").addDropdown((dropdown) => dropdown.addOptions({ simple: "Simple", advanced: "Advanced \u2014 optional" }).setValue(advanced ? "advanced" : "simple").onChange(async (value) => {
           return diagnostics.guard("main.control_41", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd59 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.settings_mode.onChange")) != null ? _c2 : (() => {
@@ -4324,7 +3908,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage38();
         const diagnosticStage39 = (_w = (_v = (_u = diagnostics) == null ? void 0 : _u.start) == null ? void 0 : _v.call(_u, "settings.render.review_repairs_before_applying")) != null ? _w : (() => {
         });
-        new import_obsidian11.Setting(containerEl).setName("Expand repair preview").setDesc("Show before and after text immediately. Every repair still asks you to confirm its credit cost.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+        new import_obsidian10.Setting(containerEl).setName("Review repairs before applying").setDesc("Preview each repair before changing notes. Recommended for unfamiliar vaults.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
           return diagnostics.guard("main.control_42", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd60 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.review_repairs_before_applying.onChange")) != null ? _c2 : (() => {
@@ -4343,7 +3927,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage39();
         const diagnosticStage40 = (_z = (_y = (_x = diagnostics) == null ? void 0 : _x.start) == null ? void 0 : _y.call(_x, "settings.render.default_report_format")) != null ? _z : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Default report format").setDesc("Used by the Export report button; change it here instead of choosing a format every time.").addDropdown((dropdown) => dropdown.addOptions({ markdown: "Markdown", csv: "CSV", json: "JSON" }).setValue(this.plugin.settings.defaultReportFormat).onChange(async (value) => {
           return diagnostics.guard("main.control_43", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd61 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.default_report_format.onChange")) != null ? _c2 : (() => {
@@ -4362,7 +3946,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage40();
         const diagnosticStage41 = (_C = (_B = (_A = diagnostics) == null ? void 0 : _A.start) == null ? void 0 : _B.call(_A, "settings.render.billing")) != null ? _C : (() => {
         });
-        new import_obsidian11.Setting(containerEl).setName("Billing").setHeading();
+        new import_obsidian10.Setting(containerEl).setName("Billing").setHeading();
         diagnosticStage41();
         const diagnosticStage42 = (_F = (_E = (_D = diagnostics) == null ? void 0 : _D.start) == null ? void 0 : _E.call(_D, "settings.render.stage_4")) != null ? _F : (() => {
         });
@@ -4395,7 +3979,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage46();
         const diagnosticStage47 = (_U = (_T = (_S = diagnostics) == null ? void 0 : _S.start) == null ? void 0 : _T.call(_S, "settings.render.refresh_balance")) != null ? _U : (() => {
         });
-        new import_obsidian11.Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for your connected account.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => {
+        new import_obsidian10.Setting(containerEl).setName("Refresh balance").setDesc("Sync purchased repair credits for your connected account.").addButton((button) => button.setButtonText("Refresh balance").onClick(async () => {
           return diagnostics.guard("main.control_45", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd63 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.refresh_balance.onClick")) != null ? _c2 : (() => {
@@ -4408,7 +3992,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
                 renderBillingSummary();
               } catch (caughtError46) {
                 diagnostics.failure("main.caught_47", caughtError46);
-                new import_obsidian11.Notice("Balance could not be refreshed. Check your connection and retry.");
+                new import_obsidian10.Notice("Balance could not be refreshed. Check your connection and retry.");
               } finally {
                 button.setDisabled(false);
                 button.setButtonText("Refresh balance");
@@ -4435,7 +4019,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage49();
         const diagnosticStage50 = (_ba = (_aa = (_$ = diagnostics) == null ? void 0 : _$.start) == null ? void 0 : _aa.call(_$, "settings.render.stage_9")) != null ? _ba : (() => {
         });
-        if (advanced) Object.keys(DEFAULT_CHECKS).forEach((type) => new import_obsidian11.Setting(containerEl).setName(FINDING_LABELS[type]).setDesc("Include this check in the next scan. Findings explain the issue before any repair.").addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => {
+        if (advanced) Object.keys(DEFAULT_CHECKS).forEach((type) => new import_obsidian10.Setting(containerEl).setName(FINDING_LABELS[type]).setDesc("Include this check in the next scan. Findings explain the issue before any repair.").addToggle((toggle) => toggle.setValue(this.plugin.settings.checks[type]).onChange(async (value) => {
           return diagnostics.guard("main.control_49", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd64 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.40380.onChange")) != null ? _c2 : (() => {
@@ -4454,7 +4038,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage50();
         const diagnosticStage51 = (_ea = (_da = (_ca = diagnostics) == null ? void 0 : _ca.start) == null ? void 0 : _da.call(_ca, "settings.render.ignored_folders")) != null ? _ea : (() => {
         });
-        new import_obsidian11.Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line, for example Templates or Private.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => {
+        new import_obsidian10.Setting(containerEl).setName("Ignored folders").setDesc("One vault-relative folder per line, for example Templates or Private.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredFolders).onChange(async (value) => {
           return diagnostics.guard("main.control_50", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd65 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.ignored_folders.onChange")) != null ? _c2 : (() => {
@@ -4473,7 +4057,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage51();
         const diagnosticStage52 = (_ha = (_ga = (_fa = diagnostics) == null ? void 0 : _fa.start) == null ? void 0 : _ga.call(_fa, "settings.render.ignored_file_patterns")) != null ? _ha : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one per line; for example Templates/**.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Ignored file patterns").setDesc("Simple * wildcards, one per line; for example Templates/**.").addTextArea((text) => text.setValue(this.plugin.settings.ignoredPatterns).onChange(async (value) => {
           return diagnostics.guard("main.control_51", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd66 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.ignored_file_patterns.onChange")) != null ? _c2 : (() => {
@@ -4492,7 +4076,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage52();
         const diagnosticStage53 = (_ka = (_ja = (_ia = diagnostics) == null ? void 0 : _ia.start) == null ? void 0 : _ja.call(_ia, "settings.render.scan_hidden_files")) != null ? _ka : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Scan hidden files").setDesc("Include files whose names begin with a dot. Off by default.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Scan hidden files").setDesc("Include files whose names begin with a dot. Off by default.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanHiddenFiles).onChange(async (value) => {
           return diagnostics.guard("main.control_52", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd67 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.scan_hidden_files.onChange")) != null ? _c2 : (() => {
@@ -4511,7 +4095,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage53();
         const diagnosticStage54 = (_na = (_ma = (_la = diagnostics) == null ? void 0 : _la.start) == null ? void 0 : _ma.call(_la, "settings.render.scan_non_markdown_files")) != null ? _na : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Scan non-Markdown files").setDesc("Include local attachments in broken-embed checks; note contents remain Markdown-only.").addToggle((toggle) => toggle.setValue(this.plugin.settings.scanNonMarkdownFiles).onChange(async (value) => {
           return diagnostics.guard("main.control_53", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd68 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.scan_non_markdown_files.onChange")) != null ? _c2 : (() => {
@@ -4530,7 +4114,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage54();
         const diagnosticStage55 = (_qa = (_pa = (_oa = diagnostics) == null ? void 0 : _oa.start) == null ? void 0 : _pa.call(_oa, "settings.render.nearly_empty_maximum_characters")) != null ? _qa : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Nearly empty maximum characters").setDesc("Notes at or below this character count may be nearly empty.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxCharacters)]: `${this.plugin.settings.emptyStubMaxCharacters} \xB7 current`, "60": "60 \xB7 short notes", "120": "120 \xB7 recommended", "240": "240 \xB7 longer notes" }).setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Nearly empty maximum characters").setDesc("Notes at or below this character count may be nearly empty.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxCharacters)]: `${this.plugin.settings.emptyStubMaxCharacters} \xB7 current`, "60": "60 \xB7 short notes", "120": "120 \xB7 recommended", "240": "240 \xB7 longer notes" }).setValue(String(this.plugin.settings.emptyStubMaxCharacters)).onChange(async (value) => {
           return diagnostics.guard("main.control_54", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd69 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.nearly_empty_maximum_characters.onChange")) != null ? _c2 : (() => {
@@ -4549,7 +4133,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage55();
         const diagnosticStage56 = (_ta = (_sa = (_ra = diagnostics) == null ? void 0 : _ra.start) == null ? void 0 : _sa.call(_ra, "settings.render.nearly_empty_maximum_meaningful_lines")) != null ? _ta : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Nearly empty maximum meaningful lines").setDesc("Ignore blank lines and frontmatter when identifying nearly empty notes.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxMeaningfulLines)]: `${this.plugin.settings.emptyStubMaxMeaningfulLines} \xB7 current`, "1": "1 line", "3": "3 lines \xB7 recommended", "5": "5 lines" }).setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Nearly empty maximum meaningful lines").setDesc("Ignore blank lines and frontmatter when identifying nearly empty notes.").addDropdown((dropdown) => dropdown.addOptions({ [String(this.plugin.settings.emptyStubMaxMeaningfulLines)]: `${this.plugin.settings.emptyStubMaxMeaningfulLines} \xB7 current`, "1": "1 line", "3": "3 lines \xB7 recommended", "5": "5 lines" }).setValue(String(this.plugin.settings.emptyStubMaxMeaningfulLines)).onChange(async (value) => {
           return diagnostics.guard("main.control_55", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd70 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.nearly_empty_maximum_meaningful_lines.onChange")) != null ? _c2 : (() => {
@@ -4568,7 +4152,7 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
         diagnosticStage56();
         const diagnosticStage57 = (_wa = (_va = (_ua = diagnostics) == null ? void 0 : _ua.start) == null ? void 0 : _va.call(_ua, "settings.render.report_folder")) != null ? _wa : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Report folder").setDesc("Vault-relative folder for exported reports.").addText((text) => text.setValue(this.plugin.settings.reportFolder).onChange(async (value) => {
           return diagnostics.guard("main.control_56", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd71 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.report_folder.onChange")) != null ? _c2 : (() => {
@@ -4585,18 +4169,9 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
           });
         }));
         diagnosticStage57();
-        containerEl.createEl("h3", { text: "Saved ignore rules" });
-        if (!this.plugin.settings.ignoredFindings.length) containerEl.createEl("p", { text: "No saved ignore rules." });
-        this.plugin.settings.ignoredFindings.forEach((rule) => {
-          new import_obsidian11.Setting(containerEl).setName(`${rule.scope}: ${rule.key}`).setDesc(rule.reason).addButton((button) => button.setButtonText("Remove").onClick(async () => {
-            this.plugin.settings.ignoredFindings = this.plugin.settings.ignoredFindings.filter((item) => item !== rule);
-            await this.plugin.refreshIgnoreRules();
-            this.display();
-          }));
-        });
         const diagnosticStage58 = (_za = (_ya = (_xa = diagnostics) == null ? void 0 : _xa.start) == null ? void 0 : _ya.call(_xa, "settings.render.reset_cairn_settings")) != null ? _za : (() => {
         });
-        if (advanced) new import_obsidian11.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
+        if (advanced) new import_obsidian10.Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
           return diagnostics.guard("main.control_57", async () => {
             var _a3, _b2, _c2, _d2, _e2;
             const diagnosticEnd72 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.reset_cairn_settings.onClick")) != null ? _c2 : (() => {
@@ -4604,9 +4179,9 @@ var CairnSettingTab = class extends import_obsidian11.PluginSettingTab {
             try {
               const billing = Object.fromEntries(Object.entries(this.plugin.settings).filter(([key]) => /^(?:billing|constance|freeRepair|purchasedRepair|pending|recovered)/.test(key)));
               this.plugin.settings = { ...mergeSettings(null), ...billing };
-              await this.plugin.refreshIgnoreRules();
+              await this.plugin.saveData(this.plugin.settings);
               this.display();
-              new import_obsidian11.Notice("Cairn settings reset.");
+              new import_obsidian10.Notice("Cairn settings reset.");
             } catch (diagnosticError72) {
               (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "control.reset_cairn_settings.onClick", diagnosticError72);
               throw diagnosticError72;

@@ -22,9 +22,7 @@ Uncertain older billing records are retained and are never replayed as new v2 ch
 
 ## Release
 
-Version 3.4.77: Full and incremental scans, cancellable scans, repair reports, Undo and balance feedback were improved.
-
-Use the matching GitHub release for installation availability. Community directory review is separate from source validation.
+Version 3.4.70 contains the settings and payment-status improvements. Its exact-source preview and final Community audit completed, and it is confirmed as Current release. Install or update through Obsidian Community plugins.
 
 ## Support
 

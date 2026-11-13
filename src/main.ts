@@ -1,12 +1,11 @@
 import { initializeMatomo } from "./matomo-plugin";
 import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
 import { diagnostics } from "./diagnostics.ts";
-import { reserveNative, nativeCost, renderNativePacks, jobId, digest, recoverNative, type NativeReservation } from "./native-operations";
+import { reserveNative, renderNativePacks, jobId, digest, recoverNative, type NativeReservation } from "./native-operations";
 import {
   App,
   ItemView,
   Menu,
-  MarkdownView,
   Modal,
   Notice,
   Plugin,
@@ -17,7 +16,7 @@ import {
   TFolder,
   WorkspaceLeaf
 } from "obsidian";
-import { applyIgnoredFindings, findingCounts, ignoreRuleMatches, scanSettingsKey, scanVault, sourceFolder, type VaultReader } from "./core";
+import { applyIgnoredFindings, findingCounts, scanVault, type VaultReader } from "./core";
 import { applyTextRepairs, canRollback } from "./repair";
 import { prepareRepairJournal } from "./journal";
 import { initializeBilling, hasWritableRepairPlans, pollCheckout, reserveRepairBatch, syncBalance } from "./billing";
@@ -98,12 +97,7 @@ export default class CairnVaultLinterPlugin extends Plugin {
   lastErrors: ScanError[] = [];
   lastScan: ScanResult | null = null;
   scanAbort: AbortController | null = null;
-  reportNeedsScan = false;
-  comparisonDelta: number | null = null;
-  private sourceFiles = new Map<string, TFile>();
-  private lastNote: TFile | null = null;
   private repairApplying = false;
-  nativeWriting = false;
   private scannedSources=new Map<string,string>();
   private scanPreview?: {id:string;result:ScanResult;findings:Finding[];revealed:boolean;authorization?:NativeReservation};
   private repairAuthorizations=new WeakMap<RepairPlan[],NativeReservation>();
@@ -126,7 +120,7 @@ let diagnosticStartupEnd: () => void = () => {};
 const diagnosticEnd2 = diagnostics?.start?.("main.onload") ?? (() => {});
 try {
 
-    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and confirm repair changes and credit costs.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Review available repairs and confirm their credit cost."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
+    this.support = new PluginSupport(this, { name: "Cairn Vault Linter", summary: "Scan vault health, review findings, and apply safe repairs directly or with optional review.", quickStart: ["Open the Cairn view.", "Run a scan with the default checks.", "Apply safe repairs or enable review in settings."], commands: ["Open vault linter", "Scan vault", "Rollback last repair"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Run a fresh scan if files changed after the report was created."] });
     this.support.start();
     this.settings = mergeSettings(await this.loadData());
 diagnosticStartupEnd = diagnostics?.start?.("startup.initialize") ?? (() => {});
@@ -138,13 +132,9 @@ return diagnostics.guard("main.timer_1", () => { if (Object.keys(this.settings.p
 });
 }, 15000));
     this.reader = this.createReader();
-    this.lastNote = this.app.workspace.getActiveFile();
-    this.registerEvent(this.app.workspace.on("file-open", (file) => {
-      if (file?.extension.toLowerCase() === "md") this.lastNote = file;
-    }));
     this.registerView(VIEW_TYPE_CAIRN, (leaf) => new CairnView(leaf, this));
     registerSidebarIcon(this, VIEW_TYPE_CAIRN, "checkmark");
-    this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => diagnostics.guard("main.event_3", () => (void diagnostics.guard("main.background_4", () => (this.openDashboard(true))))));
+    this.addRibbonIcon("checkmark", "Open Cairn Vault Linter", () => diagnostics.guard("main.event_3", () => (void diagnostics.guard("main.background_4", () => (this.openDashboard())))));
     this.addCommand({ id: "scan-full-vault", name: "Scan full vault", callback: () => this.runScan() });
     this.addCommand({ id: "scan-current-note", name: "Scan current note", checkCallback: (checking) => this.scanCurrentNote(checking) });
     this.addCommand({ id: "scan-current-folder", name: "Scan current folder", checkCallback: (checking) => this.scanCurrentFolder(checking) });
@@ -208,24 +198,24 @@ try {
 const diagnosticEnd5 = diagnostics?.start?.("main.background.7408") ?? (() => {});
 try {
 
+        if(record.size>200000)throw new Error("Preview supports notes smaller than 200 KB. Choose a smaller note.");
         const file = this.app.vault.getAbstractFileByPath(record.path);
         if (!(file instanceof TFile)) throw new Error("File is no longer available");
-        const content=await this.app.vault.read(file);this.sourceFiles.set(file.path,file);this.scannedSources.set(file.path,content);return await (content);
+        const content=await this.app.vault.read(file);this.scannedSources.set(file.path,content);return await (content);
 
 } catch (diagnosticError5) { diagnostics?.failure?.("main.background.7408", diagnosticError5); throw diagnosticError5; } finally { diagnosticEnd5(); }
 }
     };
   }
 
-  async openDashboard(inTab = false): Promise<void> {
+  async openDashboard(): Promise<void> {
 const diagnosticEnd6 = diagnostics?.start?.("main.openDashboard") ?? (() => {});
 try {
 
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CAIRN)[0];
-    const leaf = inTab && existing?.getRoot() !== this.app.workspace.rootSplit
-      ? this.app.workspace.getLeaf("tab") : existing || this.app.workspace.getLeaf("tab");
+    const leaf = existing || this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
     await leaf.setViewState({ type: VIEW_TYPE_CAIRN, active: true });
-    if (existing && existing !== leaf) existing.detach();
     this.app.workspace.revealLeaf(leaf);
 
 } catch (diagnosticError6) { diagnostics?.failure?.("main.openDashboard", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
@@ -243,29 +233,18 @@ try {
 } catch (diagnosticError7) { diagnostics?.failure?.("main.refreshDashboard", diagnosticError7); throw diagnosticError7; } finally { diagnosticEnd7(); }
 }
 
-  scanFile(): TFile | null {
-    const file = this.app.workspace.getActiveFile() || this.lastNote;
-    return file?.extension.toLowerCase() === "md" && this.app.vault.getAbstractFileByPath(file.path) === file ? file : null;
-  }
-
-  async rescanReport(): Promise<void> {
-    await this.runScan(this.lastScan?.scope?.kind === "selection" ? this.lastScan.scope.paths : undefined);
-  }
-
   scanCurrentNote(checking: boolean): boolean {
-    const file = this.scanFile();
+    const file = this.app.workspace.getActiveFile();
     if (checking) return !!file && file.extension.toLowerCase() === "md";
     if (file) void diagnostics.guard("main.background_11", () => (this.runScan([file.path])));
-    else new Notice("Open a Markdown note first, then scan it from Cairn.");
     return true;
   }
 
   scanCurrentFolder(checking: boolean): boolean {
-    const file = this.scanFile();
+    const file = this.app.workspace.getActiveFile();
     const folder = file?.parent;
     if (checking) return !!folder;
-    if (folder) void diagnostics.guard("main.background_12", () => (this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => !folder.parent || candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path))));
-    else new Notice("Open a Markdown note first to scan its folder.");
+    if (folder) void diagnostics.guard("main.background_12", () => (this.runScan(this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path === folder.path || candidate.path.startsWith(`${folder.path}/`)).map((candidate) => candidate.path))));
     return true;
   }
 
@@ -298,29 +277,21 @@ return diagnostics.guard("main.control_13", () => { const diagnosticAction8 = ()
 const diagnosticEnd9 = diagnostics?.start?.("main.runScan") ?? (() => {});
 try {
 
-    if (this.repairApplying) { new Notice("Wait for the current repair or rollback to finish before scanning."); return; }
     if (this.scanAbort) {
       new Notice("Cairn is already scanning. Use Cancel scan to stop it first.");
       return;
     }
+    await this.openDashboard();
     this.scanAbort = new AbortController();
-    try {
-      await this.openDashboard();
-    } catch (error) {
-      this.scanAbort = null;
-      throw error;
-    }
     const view = this.getView();
     view?.setProgress({ phase: "indexing", currentPath: "", scanned: 0, total: 0, findings: 0 });
     try {
-      const result = await scanVault(this.reader, this.settings, scopePaths, incremental, this.scanAbort.signal, (progress) => view?.setProgress(progress), this.lastFindings, this.reportNeedsScan ? undefined : this.lastScan);
+      const result = await scanVault(this.reader, this.settings, scopePaths, incremental, this.scanAbort.signal, (progress) => view?.setProgress(progress), this.lastFindings);
       if (result.cancelled) {
         new Notice(`Cairn scan cancelled after ${result.filesScanned} file(s).`);
         return;
       }
-      this.comparisonDelta = !this.reportNeedsScan && !result.errors.length && !this.lastScan?.errors.length && !!result.comparisonKey && this.lastScan?.comparisonKey === result.comparisonKey ? findingCounts(result.findings).total - findingCounts(this.lastFindings).total : null;
       this.lastScan = result;
-      this.reportNeedsScan = false;
       this.lastErrors = result.errors;
       const fullFindings=applyIgnoredFindings(result.findings, this.settings.ignoredFindings);
       this.scanPreview={id:jobId(),result,findings:fullFindings,revealed:true};
@@ -334,7 +305,7 @@ try {
       this.settings.lastScanFileCount = result.filesScanned;
       this.settings.lastScanDurationMs = result.durationMs;
       this.settings.lastFileSignatures = result.signatures;
-      await this.saveData(this.settings);
+      if(this.settings.billingAccountLinked) await this.saveData(this.settings);
       await this.refreshDashboard();
       new Notice(`Cairn found ${counts.total} finding(s) in ${result.filesScanned} file(s).`);
     } catch (error) {
@@ -373,9 +344,10 @@ try {
 const diagnosticEnd12 = diagnostics?.start?.("main.background.12634") ?? (() => {});
 try {
 
-      const key = scope === "finding" ? finding.id : scope === "source" ? finding.sourcePath : sourceFolder(finding.sourcePath) || "/";
-      this.settings.ignoredFindings = [...this.settings.ignoredFindings.filter(item => item.key !== key || item.scope !== scope), { key, reason, scope, createdAt: new Date().toISOString() }];
-      await this.refreshIgnoreRules();
+      this.settings.ignoredFindings = [...this.settings.ignoredFindings.filter((item) => item.key !== finding.id), { key: scope === "finding" ? finding.id : scope === "source" ? finding.sourcePath : finding.sourcePath.split("/")[0], reason, scope, createdAt: new Date().toISOString() }];
+      this.lastFindings = applyIgnoredFindings(this.lastFindings, this.settings.ignoredFindings);
+      await this.saveData(this.settings);
+      await this.refreshDashboard();
 
 } catch (diagnosticError12) { diagnostics?.failure?.("main.background.12634", diagnosticError12); throw diagnosticError12; } finally { diagnosticEnd12(); }
 }).open();
@@ -383,57 +355,10 @@ try {
 } catch (diagnosticError11) { diagnostics?.failure?.("main.ignoreFinding", diagnosticError11); throw diagnosticError11; } finally { diagnosticEnd11(); }
 }
 
-  async refreshIgnoreRules(): Promise<void> {
-    this.lastFindings = applyIgnoredFindings(this.lastFindings, this.settings.ignoredFindings);
-    if (this.scanPreview) this.scanPreview.findings = this.lastFindings;
-    this.comparisonDelta = null;
-    await this.saveData(this.settings);
-    await this.refreshDashboard();
-  }
-
-  async restoreFinding(finding: Finding): Promise<void> {
-    this.settings.ignoredFindings = this.settings.ignoredFindings.filter(item => !ignoreRuleMatches(finding, item));
-    await this.refreshIgnoreRules();
-    new Notice("Matching ignore rules removed. Other findings covered by those rules are restored too.");
-  }
-
-  async openFinding(finding: Finding): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(finding.sourcePath) || this.sourceFiles.get(finding.sourcePath);
-    if (!(file instanceof TFile) || this.app.vault.getAbstractFileByPath(file.path) !== file) {
-      new Notice(`The note ${finding.sourcePath} is missing. Run a new scan to locate current findings.`);
-      return;
-    }
-    try {
-      const leaf = this.app.workspace.getLeavesOfType("markdown").find(item => item.view instanceof MarkdownView && item.view.file === file) || this.app.workspace.getLeaf("tab");
-      await leaf.openFile(file, { eState: { line: Math.max(0, finding.line - 1) } });
-      if (leaf.view instanceof MarkdownView) {
-        const line = Math.max(0, Math.min(finding.line - 1, leaf.view.editor.lineCount() - 1));
-        leaf.view.editor.setCursor({ line, ch: 0 });
-        leaf.view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 0 } }, true);
-      }
-      await this.app.workspace.revealLeaf(leaf);
-      if (file.path !== finding.sourcePath) new Notice(`Opened renamed note ${file.path}. Run a new scan to refresh its findings.`);
-    } catch (error) {
-      diagnostics.failure("main.openFinding", error);
-      new Notice(`Could not open ${file.path}. Run a new scan and try again.`);
-    }
-  }
-
-  reportScope(): string {
-    const scope = this.lastScan?.scope;
-    if (!scope) return "No current report";
-    return scope.kind === "vault" ? "Full vault (eligible notes)" : `Selected notes (${scope.paths.length}): ${scope.paths.join(", ") || "none"}`;
-  }
-
-  reportIsStale(): boolean {
-    return this.reportNeedsScan || (!!this.lastScan?.settingsKey && this.lastScan.settingsKey !== scanSettingsKey(this.settings));
-  }
-
   async reviewRepairs(findings: Finding[]): Promise<void> {
 const diagnosticEnd13 = diagnostics?.start?.("main.reviewRepairs") ?? (() => {});
 try {
 
-    if (this.reportIsStale()) { new Notice("Run a new scan before applying repairs. The report needs updating."); return; }
     const candidates = findings.filter((finding) => finding.repair && !finding.ignored);
     if (!candidates.length) {
       new Notice("There are no exact, reviewable repairs in the current results.");
@@ -455,7 +380,11 @@ try {
       new Notice("Cairn found no note changes to apply. Nothing was charged.");
       return;
     }
-    new RepairPreviewModal(this.app, plans, (selected) => void diagnostics.guard("main.background_16", () => this.applyRepairPlans(selected)), this.settings).open();
+    if (this.settings.reviewBeforeApply) {
+      new RepairPreviewModal(this.app, plans, (selected) => void diagnostics.guard("main.background_16", () => (this.applyRepairPlans(selected))), async () => { const diagnosticEnd14 = diagnostics?.start?.("main.background.14551") ?? (() => {}); try { return true; } catch (diagnosticError14) { diagnostics?.failure?.("main.background.14551", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); } }).open();
+    } else {
+      await this.applyRepairPlans(plans);
+    }
 
 } catch (diagnosticError13) { diagnostics?.failure?.("main.reviewRepairs", diagnosticError13); throw diagnosticError13; } finally { diagnosticEnd13(); }
 }
@@ -464,8 +393,6 @@ try {
 const diagnosticEnd15 = diagnostics?.start?.("main.applyRepairPlans") ?? (() => {});
 try {
 
-    if (this.reportIsStale()) { new Notice("Run a new scan before applying repairs."); return; }
-    if (this.scanAbort) { new Notice("Wait for the current scan to finish before applying repairs."); return; }
     if (this.repairApplying) {
       new Notice("Cairn is already applying a repair batch.");
       return;
@@ -506,16 +433,13 @@ diagnostics.failure("main.caught_17", error);
       if(reservation.markWriting && !await reservation.markWriting(await Promise.all(readyPlans.map(async plan=>{ const diagnosticEnd16 = diagnostics?.start?.("main.background.16573") ?? (() => {}); try { return await (({path:plan.path,before:await digest(plan.before),after:await digest(plan.after)})); } catch (diagnosticError16) { diagnostics?.failure?.("main.background.16573", diagnosticError16); throw diagnosticError16; } finally { diagnosticEnd16(); } }))))return;
       const changed: string[] = [];
       const failed: string[] = [];
-      const unwritten: string[] = [];
       for (const plan of readyPlans) {
         try {
           const file = this.app.vault.getAbstractFileByPath(plan.path);
-          if (!(file instanceof TFile)) { skipped.push(plan.path); unwritten.push(plan.path); continue; }
+          if (!(file instanceof TFile)) { skipped.push(plan.path); continue; }
           const current = await this.app.vault.read(file);
-          if (current !== plan.before) { skipped.push(plan.path); unwritten.push(plan.path); continue; }
-          this.reportNeedsScan = true;
-          this.comparisonDelta = null;
-          await this.app.vault.process(file,latest=>{if(latest!==plan.before){unwritten.push(plan.path);throw new Error("The source changed. Your original preview is saved.");}return plan.after;});
+          if (current !== plan.before) { skipped.push(plan.path); continue; }
+          await this.app.vault.process(file,latest=>{if(latest!==plan.before)throw new Error("The source changed. Your original preview is saved.");return plan.after;});
           if(await this.app.vault.read(file)!==plan.after)throw new Error("The repair could not be confirmed. Recovery data is saved. Check the note before retrying.");
           changed.push(plan.path);
         } catch (error) {
@@ -523,15 +447,9 @@ diagnostics.failure("main.caught_18", error);
           failed.push(`${plan.path}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      await reservation.completeWrites?.(unwritten);
       if (!changed.length) {
         await reservation.rollback();
-        // A write can succeed even if its verification read failed. Keep its
-        // recovery text whenever any output is present or cannot be read.
-        const unchanged = await Promise.all(readyPlans.map(async plan => {
-          try { return await this.app.vault.adapter.read(plan.path) === plan.before; } catch { return false; }
-        }));
-        if (unchanged.every(Boolean)) await restoreJournal();
+        await restoreJournal();
       } else {
         const billingResult = await reservation.commit();
         if (billingResult.kind === "pending") new Notice("Cairn repair applied. Billing is pending and will retry automatically.");
@@ -540,10 +458,8 @@ diagnostics.failure("main.caught_18", error);
       await this.refreshDashboard();
     } catch (error) {
 diagnostics.failure("main.caught_19", error);
-      await this.refreshDashboard();
       new Notice(`Cairn repair could not be applied: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      this.nativeWriting = false;
       this.repairApplying = false;
     }
 
@@ -558,8 +474,6 @@ diagnostics.failure("main.caught_19", error);
 const diagnosticEnd17 = diagnostics?.start?.("main.rollbackLastRepair") ?? (() => {});
 try {
 
-    if (this.repairApplying || this.scanAbort) { new Notice("Wait for the current scan, repair or rollback to finish."); return; }
-    this.repairApplying = true;
     try {
       const journal = JSON.parse(await this.app.vault.adapter.read(this.journalPath())) as RepairJournal;
       const rolledBack: string[] = [];
@@ -569,23 +483,14 @@ try {
         if (!(file instanceof TFile)) { skipped.push(entry.path); continue; }
         const current = await this.app.vault.read(file);
         if (!canRollback(current, entry.after)) { skipped.push(entry.path); continue; }
-        this.reportNeedsScan = true;
-        this.comparisonDelta = null;
-        await this.app.vault.process(file, latest => {
-          if (!canRollback(latest, entry.after)) throw new Error("The note changed before rollback. Newer edits were preserved.");
-          return entry.before;
-        });
-        if (await this.app.vault.read(file) !== entry.before) throw new Error("Rollback could not be verified. Recovery data is saved.");
+        await this.app.vault.modify(file, entry.before);
         rolledBack.push(entry.path);
       }
       new Notice(`Cairn rollback: ${rolledBack.length} restored, ${skipped.length} skipped to protect newer edits.`);
       await this.refreshDashboard();
     } catch (error) {
 diagnostics.failure("main.caught_20", error);
-      await this.refreshDashboard();
-      new Notice(`Cairn rollback could not finish: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      this.repairApplying = false;
+      new Notice(`No recoverable Cairn repair batch was found: ${error instanceof Error ? error.message : String(error)}`);
     }
 
 } catch (diagnosticError17) { diagnostics?.failure?.("main.rollbackLastRepair", diagnosticError17); throw diagnosticError17; } finally { diagnosticEnd17(); }
@@ -622,7 +527,7 @@ try {
 
   private markdownReport(): string {
     const counts = findingCounts(this.lastFindings);
-    const lines = [`# Cairn Vault Linter report`, ``, `- Scanned: ${this.settings.lastScanAt}`, `- Scope: ${this.reportScope()}`, `- Report needs scan: ${this.reportIsStale()}`, `- Notes indexed: ${this.lastScan?.notesIndexed || 0}`, `- Files scanned: ${this.lastScan?.filesScanned || 0}`, `- Findings: ${counts.total} (${counts.high} high)`, ``];
+    const lines = [`# Cairn Vault Linter report`, ``, `- Scanned: ${this.settings.lastScanAt}`, `- Files scanned: ${this.lastScan?.filesScanned || 0}`, `- Findings: ${counts.total} (${counts.high} high)`, ``];
     const groups = new Map<string, Finding[]>();
     this.lastFindings.forEach((finding) => groups.set(finding.sourcePath, [...(groups.get(finding.sourcePath) || []), finding]));
     groups.forEach((findings, path) => {
@@ -635,14 +540,12 @@ try {
   }
 
   private csvReport(): string {
-    const header = ["id", "type", "severity", "source", "line", "section", "target", "resolved", "ignored", "context", "explanation", "scan_scope", "report_needs_scan"];
-    const rows = this.lastFindings.map((finding) => [finding.id, finding.type, finding.severity, finding.sourcePath, String(finding.line), finding.section, finding.target, String(finding.resolved), String(!!finding.ignored), finding.context, finding.explanation, this.reportScope(), String(this.reportIsStale())]);
-    if (!rows.length) rows.push([...Array<string>(11).fill(""), this.reportScope(), String(this.reportIsStale())]);
-    return [header, ...rows].map(row => row.map(escapeCsv).join(",")).join("\n");
+    const header = ["id", "type", "severity", "source", "line", "section", "target", "resolved", "ignored", "context", "explanation"];
+    return [header, ...this.lastFindings.map((finding) => [finding.id, finding.type, finding.severity, finding.sourcePath, String(finding.line), finding.section, finding.target, String(finding.resolved), String(!!finding.ignored), finding.context, finding.explanation])].map((row) => row.map(escapeCsv).join(",")).join("\n");
   }
 
   private jsonReport(): string {
-    return JSON.stringify({ generatedAt: new Date().toISOString(), summary: { scope: this.lastScan?.scope, scopeLabel: this.reportScope(), needsScan: this.reportIsStale(), notesIndexed: this.lastScan?.notesIndexed || 0, filesScanned: this.lastScan?.filesScanned || 0, ...findingCounts(this.lastFindings) }, findings: this.lastFindings, errors: this.lastErrors }, null, 2);
+    return JSON.stringify({ generatedAt: new Date().toISOString(), summary: { filesScanned: this.lastScan?.filesScanned || 0, ...findingCounts(this.lastFindings) }, findings: this.lastFindings, errors: this.lastErrors }, null, 2);
   }
 }
 
@@ -653,9 +556,6 @@ class CairnView extends ItemView {
   private severityFilter = "all";
   private folderFilter = "all";
   private stateFilter = "unresolved";
-  private scanScope = "vault";
-  private filtersOpen = false;
-  private suggestionsOpen = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: CairnVaultLinterPlugin) {
     super(leaf);
@@ -685,18 +585,6 @@ const diagnosticAction21 = () => {
 
   setProgress(progress: ScanProgress | null): void {
     this.progress = progress;
-    const existing = this.contentEl.querySelector(".cairn-progress");
-    if (progress && existing) {
-      const title = existing.querySelector("strong");
-      const text = existing.querySelector("p");
-      const bar = existing.querySelector("progress");
-      if (title) title.textContent = `Scanning ${progress.phase}...`;
-      if (text) text.textContent = progress.phase === "reading" || progress.phase === "indexing"
-        ? `Reading notes for target indexing${progress.currentPath ? `: ${progress.currentPath}` : ""}`
-        : `${progress.scanned}/${progress.total} notes checked, ${progress.findings} findings${progress.currentPath ? `: ${progress.currentPath}` : ""}`;
-      if (bar) { bar.max = progress.total || 1; bar.value = Math.min(progress.scanned, bar.max); }
-      return;
-    }
     this.render();
   }
 
@@ -704,49 +592,33 @@ const diagnosticAction21 = () => {
 const diagnosticAction22 = () => {
 
     const root = this.contentEl;
-    const scrollTop = root.scrollTop;
     root.empty();
     root.addClass("cairn-view");
     const heading = root.createEl("h1", { text: "Cairn Vault Linter" });
     heading.setAttr("tabindex", "-1");
-    root.createEl("p", { text: "Find broken links. Scanning never changes your notes." }).addClass("cairn-subtitle");
+    root.createEl("p", { text: "A local, reviewable health report for links, references, and dangling notes. Scanning never edits vault content." }).addClass("cairn-subtitle");
     const actions = root.createDiv({ cls: "cairn-actions" });
-    this.select(actions, "Scan scope", this.scanScope, ["vault", "note", "folder", "changed"], (value) => { this.scanScope = value; });
-    this.button(actions, "Scan", () => {
-      if (this.scanScope === "note") this.plugin.scanCurrentNote(false);
-      else if (this.scanScope === "folder") this.plugin.scanCurrentFolder(false);
-      else void this.plugin.runScan(undefined, this.scanScope === "changed");
-    }, true, !this.plugin.scanAbort);
-    if (this.plugin.scanAbort) this.button(actions, "Cancel scan", () => this.plugin.cancelScan());
-    if (this.leaf.getRoot() !== this.app.workspace.rootSplit) this.button(actions, "Open in tab", () => void this.plugin.openDashboard(true));
+    this.button(actions, "Scan full vault", () => void diagnostics.guard("main.background_24", () => (this.plugin.runScan())), true);
+    this.button(actions, "Changed notes", () => void diagnostics.guard("main.background_25", () => (this.plugin.runScan(undefined, true))));
+    this.button(actions, "Current note", () => this.plugin.scanCurrentNote(false));
+    this.button(actions, "Current folder", () => this.plugin.scanCurrentFolder(false));
+    this.button(actions, "Cancel", () => this.plugin.cancelScan(), false, !!this.plugin.scanAbort);
+
+    this.button(actions, "Rollback last repair", () => void diagnostics.guard("main.background_26", () => (this.plugin.rollbackLastRepair())));
     if (this.progress) {
       const progress = root.createDiv({ cls: "cairn-progress" });
       progress.setAttr("role", "status");
       progress.setAttr("aria-live", "polite");
       progress.createEl("strong", { text: `Scanning ${this.progress.phase}…` });
-      progress.createEl("p", { text: this.progress.phase === "reading" || this.progress.phase === "indexing" ? `Reading notes for target indexing${this.progress.currentPath ? `: ${this.progress.currentPath}` : ""}` : `${this.progress.scanned}/${this.progress.total} notes checked, ${this.progress.findings} findings${this.progress.currentPath ? `: ${this.progress.currentPath}` : ""}` });
+      progress.createEl("p", { text: `${this.progress.scanned}/${this.progress.total || "?"} files · ${this.progress.findings} findings${this.progress.currentPath ? ` · ${this.progress.currentPath}` : ""}` });
       const bar = progress.createEl("progress");
       bar.max = this.progress.total || 1;
       bar.value = Math.min(this.progress.scanned, bar.max);
       bar.setAttr("aria-label", "Cairn scan progress");
     }
-    if (this.plugin.lastScan) {
-      const scope = root.createEl("details", { cls: "cairn-report-details" });
-      scope.createEl("summary", { text: `${this.plugin.lastScan.filesScanned} note${this.plugin.lastScan.filesScanned === 1 ? "" : "s"} checked. Scan details` });
-      scope.createEl("p", { text: `Scope: ${this.plugin.reportScope()}. ${this.plugin.lastScan.notesIndexed || 0} notes read for indexing${this.plugin.lastScan.incremental ? "; unchanged findings retained" : ""}.` });
-    }
-    if (this.plugin.reportIsStale()) {
-      const stale = root.createDiv({ attr: { role: "status" } });
-      stale.createEl("p", { text: "This report needs a new scan after note changes or changed check settings. Related findings may still be listed. Repair actions are paused." });
-      this.button(stale, "Rescan this report", () => void this.plugin.rescanReport(), true);
-    }
     this.renderSummary(root);
-    const recovery = root.createDiv({ cls: "cairn-recovery" });
-    this.button(recovery, "Undo last repair", () => void this.plugin.rollbackLastRepair());
     if (this.plugin.lastFindings.length || this.plugin.lastErrors.length) this.renderResults(root);
-    else root.createEl("p", { text: this.plugin.lastScan ? "No findings in the checked scope." : "Run a scan to see grouped findings and safe repair options." }).addClass("cairn-empty");
-    root.createEl("small", { text: `Cairn Vault Linter ${this.plugin.manifest.version}` });
-    root.scrollTop = scrollTop;
+    else root.createEl("p", { text: "Run a scan to see grouped findings and safe repair options." }).addClass("cairn-empty");
 
 }; return diagnostics?.run ? diagnostics.run("main.render", diagnosticAction22) : diagnosticAction22();
 }
@@ -754,11 +626,13 @@ const diagnosticAction22 = () => {
   private renderSummary(root: HTMLElement): void {
 const diagnosticAction23 = () => {
 
-    if (!this.plugin.lastScan) return;
-    const active = this.plugin.lastFindings.filter(finding => !finding.ignored);
-    const suggestions = active.filter(finding => finding.type === "duplicate-link").length;
-    const problems = active.length - suggestions;
-    root.createEl("p", { cls: "cairn-summary", attr: { role: "status" }, text: `${problems} ${problems === 1 ? "needs" : "need"} attention${suggestions ? `, ${suggestions} optional suggestions` : ""}${this.plugin.comparisonDelta === null ? "." : this.plugin.comparisonDelta === 0 ? ". No change." : `. ${this.plugin.comparisonDelta > 0 ? "+" : ""}${this.plugin.comparisonDelta} since the previous scan of this scope.`}` });
+    const counts = findingCounts(this.plugin.lastFindings);
+    const grid = root.createDiv({ cls: "cairn-summary", attr: { role: "region", "aria-label": "Scan summary" } });
+    const trend = this.plugin.settings.lastScanFindingCount - this.plugin.settings.previousFindingCount;
+    this.metric(grid, "Findings", String(counts.total), trend ? `${trend > 0 ? "+" : ""}${trend} since previous scan` : "No previous comparison");
+    this.metric(grid, "High severity", String(counts.high), "Needs attention first");
+    this.metric(grid, "Files scanned", String(this.plugin.lastScan?.filesScanned || this.plugin.settings.lastScanFileCount || 0), this.plugin.settings.lastScanAt ? new Date(this.plugin.settings.lastScanAt).toLocaleString() : "Not scanned yet");
+    this.metric(grid, "Ignored", String(counts.ignored), "Ignored findings remain reviewable");
 
 }; return diagnostics?.run ? diagnostics.run("main.renderSummary", diagnosticAction23) : diagnosticAction23();
 }
@@ -766,39 +640,21 @@ const diagnosticAction23 = () => {
   private renderResults(root: HTMLElement): void {
 const diagnosticAction24 = () => {
 
-    const findings = this.filteredFindings();
-    const filterDetails = root.createEl("details", { cls: "cairn-filter-details" });
-    filterDetails.open = this.filtersOpen;
-    filterDetails.createEl("summary", { text: `Filters (${findings.length} shown)` });
-    filterDetails.ontoggle = () => { this.filtersOpen = filterDetails.open; };
-    const toolbar = filterDetails.createDiv({ cls: "cairn-filters" });
+    const toolbar = root.createDiv({ cls: "cairn-filters" });
     this.select(toolbar, "Finding type", this.typeFilter, ["all", ...Object.keys(FINDING_LABELS)], (value) => { this.typeFilter = value; this.render(); });
     this.select(toolbar, "Severity", this.severityFilter, ["all", "high", "medium", "low", "info"], (value) => { this.severityFilter = value; this.render(); });
     const folders = [...new Set(this.plugin.lastFindings.map((finding) => finding.sourcePath.split("/").slice(0, -1).join("/") || "/"))].sort();
     this.select(toolbar, "Folder", this.folderFilter, ["all", ...folders], (value) => { this.folderFilter = value; this.render(); });
     this.select(toolbar, "State", this.stateFilter, ["all", "unresolved", "ignored"], (value) => { this.stateFilter = value; this.render(); });
-    const repairable = findings.filter(finding => finding.repair && !finding.ignored);
-    const actions = root.createDiv({ cls: "cairn-actions" });
-    if (repairable.length) this.button(actions, `Review ${repairable.length} repair${repairable.length === 1 ? "" : "s"}`, () => void this.plugin.reviewRepairs(findings), true, !this.plugin.reportIsStale());
-    this.button(actions, "Export report", () => void this.plugin.exportReport(this.plugin.settings.defaultReportFormat));
-    const suggestions = root.createEl("details", { cls: "cairn-suggestions" });
-    const optionalCount = findings.filter(finding => finding.type === "duplicate-link").length;
-    suggestions.hidden = optionalCount === 0;
-    suggestions.open = this.suggestionsOpen;
-    suggestions.createEl("summary", { text: `Repeated links (${optionalCount} optional suggestions)` });
-    suggestions.ontoggle = () => { this.suggestionsOpen = suggestions.open; };
-    const issues = root.createDiv({ cls: "cairn-issues" });
-    root.insertBefore(issues, suggestions);
+    const exportButton = this.button(toolbar, "Export report", () => void diagnostics.guard("main.background_27", () => (this.plugin.exportReport(this.plugin.settings.defaultReportFormat))));
+    exportButton.setAttr("aria-label", "Export the current Cairn report");
+    this.button(toolbar, this.plugin.settings.reviewBeforeApply ? "Review safe repairs" : "Apply safe repairs", () => void diagnostics.guard("main.background_28", () => (this.plugin.reviewRepairs(this.filteredFindings()))));
+    const findings = this.filteredFindings();
+    root.createEl("p", { text: `${findings.length} finding(s) shown${this.plugin.lastErrors.length ? ` · ${this.plugin.lastErrors.length} unreadable file(s)` : ""}` }).addClass("cairn-filter-summary");
     const groups = new Map<string, Finding[]>();
-    const rank: Record<Severity, number> = { high: 0, medium: 1, low: 2, info: 3 };
-    [...findings].sort((a, b) => rank[a.severity] - rank[b.severity] || a.sourcePath.localeCompare(b.sourcePath) || a.line - b.line).forEach((finding) => {
-      const key = `${finding.type === "duplicate-link" ? "suggestion" : "issue"}:${finding.sourcePath}`;
-      groups.set(key, [...(groups.get(key) || []), finding]);
-    });
-    groups.forEach((group) => {
-      const path = group[0].sourcePath;
-      const parent = group[0].type === "duplicate-link" ? suggestions : issues;
-      const details = parent.createEl("details", { cls: "cairn-source-group" });
+    findings.forEach((finding) => groups.set(finding.sourcePath, [...(groups.get(finding.sourcePath) || []), finding]));
+    groups.forEach((group, path) => {
+      const details = root.createEl("details", { cls: "cairn-source-group" });
       details.open = true;
       details.createEl("summary", { text: `${path} (${group.length})` });
       group.forEach((finding) => this.renderFinding(details, finding));
@@ -820,7 +676,7 @@ const diagnosticAction24 = () => {
 const diagnosticAction25 = () => {
 
     const card = parent.createDiv({ cls: `cairn-finding cairn-${finding.severity}` });
-    const title = card.createEl("h3", { text: `${finding.type === "duplicate-link" ? "Repeated link (optional)" : FINDING_LABELS[finding.type]} · line ${finding.line}` });
+    const title = card.createEl("h3", { text: `${FINDING_LABELS[finding.type]} · line ${finding.line}` });
     title.setAttr("tabindex", "0");
     const badge = title.createSpan({ cls: "cairn-badge", text: SEVERITY_LABELS[finding.severity] });
     badge.setAttr("aria-label", `${SEVERITY_LABELS[finding.severity]} severity`);
@@ -828,16 +684,10 @@ const diagnosticAction25 = () => {
     const meta = card.createEl("p", { cls: "cairn-meta" });
     meta.createEl("code", { text: finding.target || "(no target)" });
     meta.appendText(` · ${finding.section} · ${finding.ignored ? `Ignored: ${finding.ignoredReason}` : finding.resolved ? "Resolved target" : "Unresolved"}`);
-    if (finding.context) {
-      const context = card.createEl("details", { cls: "cairn-context-details" });
-      context.createEl("summary", { text: "Show context" });
-      context.createEl("pre", { text: finding.context }).addClass("cairn-context");
-    }
+    if (finding.context) card.createEl("pre", { text: finding.context }).addClass("cairn-context");
     const buttons = card.createDiv({ cls: "cairn-finding-actions" });
-    this.button(buttons, "Open note", () => void this.plugin.openFinding(finding));
-    if (finding.repair && !finding.ignored && !this.plugin.reportIsStale()) this.button(buttons, "Review repair", () => void diagnostics.guard("main.background_29", () => (this.plugin.reviewRepairs([finding]))), true);
-    if (finding.ignored) this.button(buttons, "Restore finding", () => void this.plugin.restoreFinding(finding));
-    else this.button(buttons, "Ignore...", () => void diagnostics.guard("main.background_30", () => (this.plugin.ignoreFinding(finding))));
+    if (finding.repair && !finding.ignored) this.button(buttons, this.plugin.settings.reviewBeforeApply ? "Preview exact repair" : "Apply exact repair", () => void diagnostics.guard("main.background_29", () => (this.plugin.reviewRepairs([finding]))), true);
+    this.button(buttons, finding.ignored ? "Keep ignored" : "Ignore…", () => void diagnostics.guard("main.background_30", () => (this.plugin.ignoreFinding(finding))));
 
 }; return diagnostics?.run ? diagnostics.run("main.renderFinding", diagnosticAction25) : diagnosticAction25();
 }
@@ -855,7 +705,7 @@ const diagnosticAction25 = () => {
     const labelEl = wrapper.createEl("label", { text: label, attr: { for: id } });
     labelEl.addClass("cairn-filter-label");
     const select = wrapper.createEl("select", { attr: { id } });
-    options.forEach((option) => select.createEl("option", { text: ({ vault: "Full vault", note: "Current note", folder: "Current folder", changed: "Changed notes" } as Record<string, string>)[option] || (option === "all" ? "All" : FINDING_LABELS[option as FindingType] || SEVERITY_LABELS[option as Severity] || option), value: option }));
+    options.forEach((option) => select.createEl("option", { text: option === "all" ? "All" : FINDING_LABELS[option as FindingType] || SEVERITY_LABELS[option as Severity] || option, value: option }));
     select.value = value;
     select.onchange = diagnostics.wrap("main.filter_changed", () => onChange(select.value));
   }
@@ -885,7 +735,7 @@ return diagnostics.guard("main.control_33", () => { const diagnosticAction27 = (
 });
 }); });
     let scope: "finding" | "source" | "folder" = "finding";
-    new Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: `This source note: ${this.finding.sourcePath}`, folder: sourceFolder(this.finding.sourcePath) ? `This source folder: ${sourceFolder(this.finding.sourcePath)}/ (and descendants)` : "Root-level notes only (no subfolders)" }).setValue(scope).onChange((value) => {
+    new Setting(contentEl).setName("Scope").addDropdown((dropdown) => dropdown.addOptions({ finding: "This finding", source: "This source note", folder: "This source folder" }).setValue(scope).onChange((value) => {
 return diagnostics.guard("main.control_34", () => { const diagnosticAction28 = () => (scope = value as typeof scope); return diagnostics?.run ? diagnostics.run("control.scope.onChange", diagnosticAction28) : diagnosticAction28();
 });
 }));
@@ -903,34 +753,26 @@ return diagnostics.guard("main.control_34", () => { const diagnosticAction28 = (
 }
 
 class RepairPreviewModal extends Modal {
-  constructor(app: App, private plans: RepairPlan[], private onApply: (plans: RepairPlan[]) => void, private settings: CairnSettings) { super(app); }
+  constructor(app: App, private plans: RepairPlan[], private onApply: (plans: RepairPlan[]) => void, private reveal:()=>Promise<boolean>) { super(app); }
   onOpen(): void {
 return diagnostics.guard("main.onOpen_36", () => {
 const diagnosticAction29 = () => {
 
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Review repairs" });
-    const edits = this.plans.reduce((total, plan) => total + plan.proposals.length, 0);
-    const credits = nativeCost("cairn-vault-linter", { files: this.plans.length, edits });
-    contentEl.createEl("p", { text: `${this.plans.length} file${this.plans.length === 1 ? "" : "s"}, ${edits} edit${edits === 1 ? "" : "s"}. Cost: ${credits} repair credit${credits === 1 ? "" : "s"}.` });
-    contentEl.createEl("p", { text: this.settings.billingAccountLinked
-      ? `Last updated balance: ${Math.max(0, 5 - this.settings.freeRepairBatchesUsed)} free, ${Math.max(0, this.settings.purchasedRepairBatches)} purchased. Free credits are used first. Availability is checked when you apply.`
-      : "Connect your account in Cairn settings before applying repairs. Scanning and review are free." });
-    const details = contentEl.createEl("details");
-    details.open = this.settings.reviewBeforeApply;
-    details.createEl("summary", { text: "Before and after changes" });
-    const preview = details.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n") });
+    contentEl.createEl("h2", { text: "Review exact repairs" });
+    contentEl.createEl("p", { text: `${this.plans.length} files will change after you choose Apply repairs. Recovery data is saved before changes are applied.` });
+    const preview = contentEl.createEl("pre", { text: this.plans.map((plan) => `## ${plan.path}\n${diffPreview(plan.before, plan.after)}`).join("\n\n") });
     preview.setAttr("aria-label", "Before and after repair preview");
-    preview.addClass("cairn-repair-preview");
+    preview.style.maxHeight = "420px";
+    preview.style.overflow = "auto";
     const actions = contentEl.createDiv({ cls: "cairn-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
     cancel.onclick = diagnostics.wrap("main.dom_4", () => this.close());
-    const apply = actions.createEl("button", { text: `Apply for ${credits} credit${credits === 1 ? "" : "s"}` });
-    apply.disabled = !this.settings.billingAccountLinked;
+    const apply = actions.createEl("button", { text: "Apply repairs" });
     apply.addClass("mod-cta");
-    contentEl.createEl("p", { text: "Canceling uses no credits. Recovery data is saved before changes. Undo is free and preserves newer edits." });
-    apply.onclick = diagnostics.wrap("main.dom_5", () => { if (apply.disabled) return; apply.disabled = true; this.close(); this.onApply(this.plans); });
+    contentEl.createEl("p",{text:"Review the changes before applying. One repair batch uses the free credits first, then purchased credits. Canceling this review uses no credits."});
+    apply.onclick = diagnostics.wrap("main.dom_5", () => { this.close(); this.onApply(this.plans); });
 
 }; return diagnostics?.run ? diagnostics.run("main.onOpen", diagnosticAction29) : diagnosticAction29();
 
@@ -1025,7 +867,7 @@ containerEl.createEl("p", { text: "All checks run locally. Resetting settings do
 diagnosticStage38();
 
     const diagnosticStage39 = diagnostics?.start?.("settings.render.review_repairs_before_applying") ?? (() => {});
-new Setting(containerEl).setName("Expand repair preview").setDesc("Show before and after text immediately. Every repair still asks you to confirm its credit cost.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+new Setting(containerEl).setName("Review repairs before applying").setDesc("Preview each repair before changing notes. Recommended for unfamiliar vaults.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
 return diagnostics.guard("main.control_42", async () => {
 const diagnosticEnd60 = diagnostics?.start?.("control.review_repairs_before_applying.onChange") ?? (() => {});
 try {
@@ -1202,22 +1044,12 @@ try {
 }));
 diagnosticStage57();
 
-    containerEl.createEl("h3", { text: "Saved ignore rules" });
-    if (!this.plugin.settings.ignoredFindings.length) containerEl.createEl("p", { text: "No saved ignore rules." });
-    this.plugin.settings.ignoredFindings.forEach(rule => {
-      new Setting(containerEl).setName(`${rule.scope}: ${rule.key}`).setDesc(rule.reason).addButton(button => button.setButtonText("Remove").onClick(async () => {
-        this.plugin.settings.ignoredFindings = this.plugin.settings.ignoredFindings.filter(item => item !== rule);
-        await this.plugin.refreshIgnoreRules();
-        this.display();
-      }));
-    });
-
     const diagnosticStage58 = diagnostics?.start?.("settings.render.reset_cairn_settings") ?? (() => {});
 if (advanced) new Setting(containerEl).setName("Reset Cairn settings").setDesc("Restore default checks and folders; ignored findings are also cleared. Billing identity and balance settings are preserved.").addButton((button) => button.setButtonText("Reset").onClick(async () => {
 return diagnostics.guard("main.control_57", async () => {
 const diagnosticEnd72 = diagnostics?.start?.("control.reset_cairn_settings.onClick") ?? (() => {});
 try {
- const billing = Object.fromEntries(Object.entries(this.plugin.settings).filter(([key]) => /^(?:billing|constance|freeRepair|purchasedRepair|pending|recovered)/.test(key))); this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.refreshIgnoreRules(); this.display(); new Notice("Cairn settings reset.");
+ const billing = Object.fromEntries(Object.entries(this.plugin.settings).filter(([key]) => /^(?:billing|constance|freeRepair|purchasedRepair|pending|recovered)/.test(key))); this.plugin.settings = { ...mergeSettings(null), ...billing }; await this.plugin.saveData(this.plugin.settings); this.display(); new Notice("Cairn settings reset.");
 } catch (diagnosticError72) { diagnostics?.failure?.("control.reset_cairn_settings.onClick", diagnosticError72); throw diagnosticError72; } finally { diagnosticEnd72(); }
 
 });

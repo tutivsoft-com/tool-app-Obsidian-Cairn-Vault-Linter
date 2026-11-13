@@ -106,7 +106,7 @@ function parseAliases(content: string): string[] {
 }
 
 function parseHeadingsAndBlocks(content: string): { headings: Heading[]; blocks: Block[] } {
-  const lines = splitLines(maskCode(content));
+  const lines = splitLines(content);
   const headings: Heading[] = [];
   const blocks: Block[] = [];
   lines.forEach((line, index) => {
@@ -140,30 +140,13 @@ function parseTarget(target: string): Pick<ParsedLink, "path" | "fragment" | "fr
   if (hash >= 0 && (caret < 0 || hash < caret)) {
     fragment = value.slice(hash + 1).trim();
     value = value.slice(0, hash).trim();
-    fragmentKind = fragment.startsWith("^") ? "block" : "heading";
-    if (fragmentKind === "block") fragment = fragment.slice(1);
+    fragmentKind = "heading";
   } else if (caret >= 0) {
     fragment = value.slice(caret + 1).trim();
     value = value.slice(0, caret).trim();
     fragmentKind = "block";
   }
   return { path: value, fragment, fragmentKind };
-}
-
-// Keep offsets and newlines intact so repairs still address the original text.
-function maskCode(content: string): string {
-  let fence = "";
-  let length = 0;
-  return content.split(/(\r?\n)/).map(line => {
-    if (/^\r?\n$/.test(line)) return line;
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (fence) {
-      if (marker && marker[1][0] === fence && marker[1].length >= length && !marker[2].trim()) fence = "";
-      return line.replace(/./g, " ");
-    }
-    if (marker) { fence = marker[1][0]; length = marker[1].length; return line.replace(/./g, " "); }
-    return line.replace(/(`+)([\s\S]*?)\1(?!`)/g, value => " ".repeat(value.length));
-  }).join("");
 }
 
 function parseLinks(content: string): ParsedLink[] {
@@ -174,8 +157,8 @@ function parseLinks(content: string): ParsedLink[] {
     links.push({ ...link, line, section: currentSection(lines, line - 1) });
   };
   const wiki = /(!?)\[\[([^\]\n]+)\]\]/g;
-  for (const match of maskCode(content).matchAll(wiki)) {
-    const raw = content.slice(match.index, (match.index || 0) + match[0].length);
+  for (const match of content.matchAll(wiki)) {
+    const raw = match[0];
     const inner = match[2].trim();
     const parts = inner.split("|");
     const target = parts.shift()?.trim() || "";
@@ -183,8 +166,8 @@ function parseLinks(content: string): ParsedLink[] {
     addLink({ kind: "wiki", embed: match[1] === "!", raw, target, display: parts.join("|").trim(), ...parsed, start: match.index || 0, end: (match.index || 0) + raw.length }, match.index || 0);
   }
   const markdown = /(!?)\[([^\]\n]*)\]\(([^)\n]*)\)/g;
-  for (const match of maskCode(content).matchAll(markdown)) {
-    const raw = content.slice(match.index, (match.index || 0) + match[0].length);
+  for (const match of content.matchAll(markdown)) {
+    const raw = match[0];
     const target = stripMarkdownDestination(match[3]);
     const parsed = parseTarget(target);
     addLink({ kind: "markdown", embed: match[1] === "!", raw, target, display: match[2], ...parsed, start: match.index || 0, end: (match.index || 0) + raw.length }, match.index || 0);
@@ -231,9 +214,6 @@ function isHidden(path: string): boolean {
 
 function resolveNote(path: string, source: VaultFileRecord, byPath: Map<string, NoteIndex>, byBasename: Map<string, NoteIndex[]>, byAlias: Map<string, NoteIndex[]>): NoteIndex | undefined {
   const raw = path.trim().replace(/^\//, "");
-  if (/\.[^/.]+$/.test(raw) && !/\.md$/i.test(raw)) {
-    return byPath.get(normalizePath(`${raw}.md`)) || byBasename.get(normalizeText(raw))?.[0] || byAlias.get(normalizeText(raw))?.[0];
-  }
   if (!raw) return byPath.get(normalizePath(source.path));
   const direct = byPath.get(normalizePath(raw)) || byPath.get(normalizePath(`${raw}.md`));
   if (direct) return direct;
@@ -249,10 +229,7 @@ function resolveAnyFile(path: string, source: VaultFileRecord, files: Map<string
   const raw = path.trim().replace(/^\//, "");
   if (!raw) return undefined;
   const relative = normalizePath(`${source.path.split("/").slice(0, -1).join("/")}/${raw}`);
-  const direct = path.startsWith("/") ? files.get(normalizePath(raw)) : files.get(relative) || files.get(normalizePath(raw));
-  if (direct || raw.includes("/")) return direct;
-  const matches = [...files.values()].filter(file => normalizePath(file.path.split("/").pop() || "") === normalizePath(raw));
-  return matches.length === 1 ? matches[0] : undefined;
+  return path.startsWith("/") ? files.get(normalizePath(raw)) : files.get(relative) || files.get(normalizePath(raw));
 }
 
 function cleanMeaningfulText(content: string): { text: string; lines: number } {
@@ -265,30 +242,15 @@ function attachRepair(finding: Finding, link: ParsedLink, before: string, after:
   finding.repair = { label: "Apply exact link repair", before, after, start: link.start, end: link.end };
 }
 
-export function scanSettingsKey(settings: CairnSettings): string {
-  return JSON.stringify({ checks: Object.entries(settings.checks).sort(), ignoredFolders: settings.ignoredFolders, ignoredPatterns: settings.ignoredPatterns, scanHiddenFiles: settings.scanHiddenFiles, scanNonMarkdownFiles: settings.scanNonMarkdownFiles, emptyStubMaxCharacters: settings.emptyStubMaxCharacters, emptyStubMaxMeaningfulLines: settings.emptyStubMaxMeaningfulLines });
-}
-
-export function sourceFolder(path: string): string {
-  return path.slice(0, Math.max(0, path.lastIndexOf("/")));
-}
-
-export function ignoreRuleMatches(finding: Finding, item: CairnSettings["ignoredFindings"][number]): boolean {
-  if (item.scope === "finding") return item.key === finding.id;
-  if (item.scope === "source") return item.key === finding.sourcePath;
-  return item.key === "/" ? !finding.sourcePath.includes("/") : finding.sourcePath === item.key || finding.sourcePath.startsWith(`${item.key}/`);
-}
-
-export function scanVault(reader: VaultReader, settings: CairnSettings, scopePaths?: string[], incremental = false, signal?: AbortSignal, onProgress?: (progress: ScanProgress) => void, previousFindings: Finding[] = [], baseline?: ScanResult | null): Promise<ScanResult> {
+export function scanVault(reader: VaultReader, settings: CairnSettings, scopePaths?: string[], incremental = false, signal?: AbortSignal, onProgress?: (progress: ScanProgress) => void, previousFindings: Finding[] = []): Promise<ScanResult> {
   const started = Date.now();
-  settings = { ...settings, checks: { ...settings.checks }, ignoredFindings: [...settings.ignoredFindings] };
   return (async () => {
     // Keep all eligible files in the target index so a Markdown note can
     // resolve an existing attachment even when attachment contents are not
     // selected for scanning. The scan list is a separate concern.
     const allFiles = reader.getFiles().filter((file) => !isIgnoredPath(file.path, settings) && (settings.scanHiddenFiles || !isHidden(file.path)));
     const scanFiles = allFiles.filter((file) => settings.scanNonMarkdownFiles || file.extension.toLowerCase() === "md");
-    const selected = scopePaths !== undefined ? scanFiles.filter((file) => scopePaths.includes(file.path)) : scanFiles;
+    const selected = scopePaths?.length ? scanFiles.filter((file) => scopePaths.includes(file.path)) : scanFiles;
     const selectedPaths = new Set(selected.map((file) => file.path));
     const errors: ScanError[] = [];
     const signatures: Record<string, string> = {};
@@ -297,10 +259,7 @@ export function scanVault(reader: VaultReader, settings: CairnSettings, scopePat
     const byPath = new Map<string, NoteIndex>();
     const byBasename = new Map<string, NoteIndex[]>();
     const byAlias = new Map<string, NoteIndex[]>();
-    const settingsKey = scanSettingsKey(settings);
-    const changedOnly = incremental && scopePaths === undefined && baseline?.scope?.kind === "vault" && baseline.settingsKey === settingsKey && !!baseline.dependencySignatures && !baseline.errors.length;
-    const scope = { kind: scopePaths === undefined ? "vault" as const : "selection" as const, paths: selected.map(file => file.path).sort() };
-    const comparisonKey = JSON.stringify([scope.kind, scope.kind === "selection" ? scope.paths : [], settingsKey, settings.ignoredFindings]);
+    const changedOnly = incremental && Object.keys(settings.lastFileSignatures).length > 0;
     let scanned = 0;
     onProgress?.({ phase: "indexing", currentPath: "", scanned: 0, total: selected.length, findings: 0 });
     // Every target needs current headings, blocks and aliases, including
@@ -315,6 +274,7 @@ export function scanVault(reader: VaultReader, settings: CairnSettings, scopePat
         const basenameKey = normalizeText(pathWithoutExtension(file.basename || file.path.split("/").pop() || ""));
         byBasename.set(basenameKey, [...(byBasename.get(basenameKey) || []), index]);
         index.aliases.forEach((alias) => byAlias.set(normalizeText(alias), [...(byAlias.get(normalizeText(alias)) || []), index]));
+        if (selectedPaths.has(file.path)) scanned++;
         onProgress?.({ phase: "reading", currentPath: file.path, scanned, total: selected.length, findings: 0 });
       } catch (error) {
 diagnostics.failure("core.caught_1", error);
@@ -323,7 +283,7 @@ diagnostics.failure("core.caught_1", error);
       await Promise.resolve();
     }
     const readableFiles = new Map<string, VaultFileRecord>(allFiles.map((file) => [normalizePath(file.path), file]));
-
+    const findings: Finding[] = changedOnly ? previousFindings.filter((finding) => !selectedPaths.has(finding.sourcePath) && signatures[finding.sourcePath] !== undefined) : [];
     const incoming = new Map<string, number>();
     byPath.forEach((note) => note.outgoing.forEach((link) => {
       const target = resolveNote(link.path, note.file, byPath, byBasename, byAlias);
@@ -338,24 +298,6 @@ diagnostics.failure("core.caught_1", error);
         headingOccurrences.set(key, [...(headingOccurrences.get(key) || []), { note, heading }]);
       });
     });
-    const dependencySignatures: Record<string, string> = {};
-    byPath.forEach(note => {
-      const targets = note.outgoing.map(link => {
-        if (EXTERNAL_TARGET.test(link.path)) return "external";
-        let path = link.path;
-        if (link.kind === "markdown") { try { path = decodeURIComponent(path); } catch { /* Keep malformed targets. */ } }
-        const target = link.kind === "wiki" ? (resolveNote(path, note.file, byPath, byBasename, byAlias)?.file || resolveAnyFile(path, note.file, readableFiles)) : (!path && link.fragmentKind !== "none") ? note.file : resolveAnyFile(path, note.file, readableFiles);
-        return target ? [target.path, signatures[target.path]] : null;
-      });
-      dependencySignatures[note.file.path] = JSON.stringify([targets, incoming.get(note.file.path) || 0, note.blocks.map(block => [block.id, blockOccurrences.get(block.id)?.length || 0])]);
-    });
-    if (changedOnly && baseline) {
-      selectedPaths.clear();
-      selected.forEach(file => {
-        if (baseline.signatures[file.path] !== signatures[file.path] || baseline.dependencySignatures?.[file.path] !== dependencySignatures[file.path]) selectedPaths.add(file.path);
-      });
-    }
-    const findings: Finding[] = changedOnly ? previousFindings.filter(finding => !selectedPaths.has(finding.sourcePath) && signatures[finding.sourcePath] !== undefined) : [];
     for (const [id, occurrences] of blockOccurrences) {
       if (occurrences.length < 2 || !settings.checks["duplicate-block-id"]) continue;
       occurrences.forEach(({ note, block }) => {
@@ -365,7 +307,6 @@ diagnostics.failure("core.caught_1", error);
     }
     byPath.forEach((note) => {
       if (!selectedPaths.has(note.file.path)) return;
-      scanned++;
       if (settings.checks["duplicate-heading-id"]) {
         const seen = new Map<string, Heading[]>();
         note.headings.forEach((heading) => seen.set(heading.id, [...(seen.get(heading.id) || []), heading]));
@@ -375,7 +316,7 @@ diagnostics.failure("core.caught_1", error);
         });
       }
       if (settings.checks["malformed-link"]) {
-        splitLines(maskCode(note.content)).forEach((line, index) => {
+        splitLines(note.content).forEach((line, index) => {
           if (line.includes("[[") && !line.includes("]]")) findings.push(malformedLinkFinding(note.file.path, note.content, index + 1, line.trim(), "This wikilink is not closed before the end of the line."));
           if (line.includes("](") && !line.includes(")")) findings.push(malformedLinkFinding(note.file.path, note.content, index + 1, line.trim(), "This Markdown link is not closed before the end of the line."));
         });
@@ -394,7 +335,7 @@ diagnostics.failure("core.caught_1", error);
             decodedFragment = decodeURIComponent(link.fragment);
           } catch { /* Keep malformed escapes available for a finding. */ }
         }
-        const resolution = link.kind === "wiki" ? (resolveNote(link.path, note.file, byPath, byBasename, byAlias) || resolveAnyFile(link.path, note.file, readableFiles)) : (!decodedPath && link.fragmentKind !== "none") ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(decodedPath, note.file, readableFiles);
+        const resolution = link.kind === "wiki" ? (resolveNote(link.path, note.file, byPath, byBasename, byAlias) || (link.embed ? resolveAnyFile(link.path, note.file, readableFiles) : undefined)) : (!decodedPath && link.fragmentKind !== "none") ? byPath.get(normalizePath(note.file.path)) : resolveAnyFile(decodedPath, note.file, readableFiles);
         const targetNote = resolution ? ("headings" in resolution ? resolution : byPath.get(normalizePath(resolution.path))) : undefined;
         if (!resolution) {
           if (link.embed && settings.checks["broken-embed"]) findings.push(makeFinding("broken-embed", "high", note.file.path, link.line, link.section, link.target, "This embedded note or local attachment does not exist in the vault.", false, context));
@@ -411,18 +352,13 @@ diagnostics.failure("core.caught_1", error);
           }
         }
         const resolvedPath = resolution ? ("file" in resolution ? resolution.file.path : resolution.path) : link.path;
-        const canonical = `${link.embed}|${resolvedPath}|${link.fragmentKind}|${normalizeText(link.fragment)}`;
+        const canonical = `${resolvedPath}|${link.fragmentKind}|${normalizeText(link.fragment)}`;
         seenLinks.set(canonical, [...(seenLinks.get(canonical) || []), link]);
         const duplicateGroup = seenLinks.get(canonical);
         if (duplicateGroup && duplicateGroup.length > 1 && settings.checks["duplicate-link"]) {
           const first = duplicateGroup[0];
           const duplicate = makeFinding("duplicate-link", "low", note.file.path, link.line, link.section, link.target, `This link repeats the same target already linked at line ${first.line}.`, true, context);
-          // Repeated links can have different purposes. Only unwrap an exact,
-          // adjacent repeat, retaining its visible text and every embed.
-          const previous = duplicateGroup[duplicateGroup.length - 2];
-          if (!link.embed && previous.raw === link.raw && /^[ \t]+$/.test(note.content.slice(previous.end, link.start))) {
-            attachRepair(duplicate, link, link.raw, link.display || link.path || link.fragment);
-          }
+          attachRepair(duplicate, link, link.raw, "");
           findings.push(duplicate);
         }
       });
@@ -431,21 +367,20 @@ diagnostics.failure("core.caught_1", error);
         const isStub = clean.text.length <= settings.emptyStubMaxCharacters && clean.lines <= settings.emptyStubMaxMeaningfulLines && (incoming.get(note.file.path) || 0) === 0 && note.outgoing.length === 0;
         if (isStub) findings.push(makeFinding("empty-stub", "low", note.file.path, 1, "(document)", note.file.path, "This Markdown note is empty or nearly empty and has no detected incoming or outgoing links.", false, clean.text || "(no meaningful text)"));
       }
-      onProgress?.({ phase: "checking", currentPath: note.file.path, scanned, total: selectedPaths.size, findings: findings.length });
+      onProgress?.({ phase: "checking", currentPath: note.file.path, scanned, total: selected.length, findings: findings.length });
     });
     const unique = new Map<string, Finding>();
     findings.forEach((finding) => unique.set(finding.id, finding));
     const resultFindings = [...unique.values()].sort((a, b) => a.sourcePath.localeCompare(b.sourcePath) || a.line - b.line || a.type.localeCompare(b.type));
-    onProgress?.({ phase: "complete", currentPath: "", scanned, total: selectedPaths.size, findings: resultFindings.length });
-    return { findings: resultFindings, errors, filesScanned: scanned, durationMs: Date.now() - started, cancelled: false, signatures, scope, comparisonKey, settingsKey, dependencySignatures, notesIndexed: byPath.size, incremental: !!changedOnly };
+    onProgress?.({ phase: "complete", currentPath: "", scanned, total: selected.length, findings: resultFindings.length });
+    return { findings: resultFindings, errors, filesScanned: scanned, durationMs: Date.now() - started, cancelled: false, signatures };
   })();
 }
 
 export function applyIgnoredFindings(findings: Finding[], ignored: CairnSettings["ignoredFindings"]): Finding[] {
   return findings.map((finding) => {
-    const match = ignored.find(item => ignoreRuleMatches(finding, item));
-    const { ignored: oldIgnored, ignoredReason: oldReason, ...clean } = finding;
-    return match ? { ...clean, ignored: true, ignoredReason: match.reason } : clean;
+    const match = ignored.find((item) => item.scope === "finding" ? item.key === finding.id : item.scope === "source" ? item.key === finding.sourcePath : finding.sourcePath === item.key || finding.sourcePath.startsWith(`${item.key}/`));
+    return match ? { ...finding, ignored: true, ignoredReason: match.reason } : finding;
   });
 }
 
