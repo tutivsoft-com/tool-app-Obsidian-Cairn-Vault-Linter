@@ -6,7 +6,7 @@
 .cairn-progress { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: .8rem; margin: 1rem 0; background: var(--background-secondary); }
 .cairn-progress p { margin: .35rem 0; }
 .cairn-progress progress { width: 100%; height: .65rem; }
-.cairn-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; margin: 1rem 0 1.25rem; }
+.cairn-summary { margin: .7rem 0; font-weight: 600; overflow-wrap: anywhere; }
 .cairn-metric { background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: .75rem; display: flex; flex-direction: column; gap: .2rem; }
 .cairn-metric strong { font-size: 1.5rem; }
 .cairn-metric-label, .cairn-metric small { color: var(--text-muted); }
@@ -27,7 +27,19 @@
 .cairn-errors { margin-top: 1rem; border: 1px solid var(--text-error); border-radius: 6px; padding: .6rem; }
 .cairn-errors p { overflow-wrap: anywhere; }
 .cairn-modal-actions { justify-content: flex-end; margin-top: 1rem; }
-@media (max-width: 700px) { .cairn-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cairn-filter { min-width: 45%; } }
+.cairn-view, .cairn-view * { box-sizing: border-box; }
+.cairn-view { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-interface); }
+.cairn-view h1 { font-size: 1.4rem; }
+.cairn-view button, .cairn-view select { max-width: 100%; white-space: normal; height: auto; min-height: 30px; }
+.cairn-view .cairn-filter { min-width: 0; flex: 1 1 130px; }
+.cairn-view select { width: 100%; }
+.cairn-finding h3 { flex-wrap: wrap; }
+.cairn-meta code { white-space: normal; overflow-wrap: anywhere; }
+.cairn-filter-details, .cairn-report-details, .cairn-suggestions { margin: .65rem 0; }
+.cairn-recovery { margin: .6rem 0; }
+.cairn-context-details { margin: .5rem 0; }
+.cairn-repair-preview { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cairn-view summary { cursor: pointer; }
 
 /* Shared settings presentation. Colors describe purpose; text labels carry meaning. */
 .cairn-vault-linter-settings.ui-settings-layout {

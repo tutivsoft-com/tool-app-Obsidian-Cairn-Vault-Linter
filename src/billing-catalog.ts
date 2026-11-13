@@ -43,7 +43,8 @@ export function addLivePacks(root: HTMLElement, host: BillingCatalogHost): void 
       const matching = offers.filter(offer => offer.pack.currency === selectedCurrency);
       status.setText(matching.length ? "Applicable taxes are calculated at checkout." : "No packs available in this currency.");
       for (const { pack, priceId, units, unit, amount, available } of matching.sort((a, b) => a.units - b.units)) {
-        new Setting(packs).setName(pack.name || "Credit offer").setDesc(`${pack.description ? pack.description.replace(/[.!?]$/, "") + ". " : ""}Applicable taxes are calculated at checkout.`).addButton(button => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available || !host.state.billingAccountLinked).onClick(async () => {
+        const display = (value: string) => host.appId === "cairn-vault-linter" ? value.replace(/repair batch(es)?/gi, (_match, plural) => `repair credit${plural ? "s" : ""}`) : value;
+        new Setting(packs).setName(display(pack.name || "Credit offer")).setDesc(`${pack.description ? display(pack.description).replace(/[.!?]$/, "") + ". " : ""}Applicable taxes are calculated at checkout.`).addButton(button => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available || !host.state.billingAccountLinked).onClick(async () => {
           button.setDisabled(true);
           try { await openAccountCheckout(checkoutHost, priceId); } finally { button.setDisabled(!available || !host.state.billingAccountLinked); }
         }));
