@@ -6,11 +6,11 @@ import { addLivePacks, joinPublicPacks } from "./billing-catalog";
 export type NativeDimensions = Record<string,number>;
 export type WriteEvidence = {path:string;binary?:boolean;before?:string;after?:string;marker?:string};
 export type Journal = {protocol?:string;event_id:string;app_id:string;source_digest:string;result_digest:string;amount:number;
-  free_units:number;paid_units:number;state:string;account:string;dimensions:NativeDimensions;evidence?:WriteEvidence[];operation_id?:string};
+  free_units:number;paid_units:number;state:string;account:string;dimensions:NativeDimensions;evidence?:WriteEvidence[];operation_id?:string;unwritten_paths?:string[]};
 type State = {billingEmail:string;billingAccessToken:string;billingRefreshToken:string;
   billingAccountLinked:boolean;constanceDeviceId:string;operationJournal?:Journal[];pendingSpendEvents?:unknown[];pendingFreeUsageEvents?:unknown[]};
-export type NativeHost={app:App;settings:State;persistNative():Promise<void>;syncBalance?():Promise<void>};
-export interface NativeReservation {source:"free"|"purchased";markWriting(evidence?:WriteEvidence[]):Promise<boolean>;commit():Promise<{kind:"committed"|"pending"}>;rollback():Promise<void>}
+export type NativeHost={app:App;settings:State;nativeWriting?:boolean;persistNative():Promise<void>;syncBalance?():Promise<void>};
+export interface NativeReservation {source:"free"|"purchased";markWriting(evidence?:WriteEvidence[]):Promise<boolean>;completeWrites?(unwrittenPaths:string[]):Promise<void>;commit():Promise<{kind:"committed"|"pending"}>;rollback():Promise<void>}
 export async function digest(value:string|ArrayBuffer):Promise<string>{
   const bytes=typeof value==="string"?new TextEncoder().encode(value):value;
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),b=>b.toString(16).padStart(2,"0")).join("");
@@ -22,7 +22,7 @@ const pendingStates=["requesting","reserved","writing","verified","uncertain_rel
 const owner=(host:NativeHost)=>host.settings.billingEmail.trim().toLowerCase();
 async function api(host:NativeHost,path:string,body?:unknown):Promise<any>{
   const response=await requestAuthenticatedBilling(host.settings,()=>host.persistNative(),{url:CONSTANCE_API+path,
-    method:body===undefined?"GET":"POST",throw:false,...(body===undefined?{}:{body:JSON.stringify(body)})});
+    method:body===undefined?"GET":"POST",throw:false,...(body===undefined?{}:{headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})});
   if(response.status<200||response.status>=300||!response.json?.data)throw new Error("Your account could not be verified. Your saved operation will be retried safely.");
   return response.json.data;
 }
@@ -58,17 +58,36 @@ async function writesMatch(host:NativeHost,journal:Journal):Promise<boolean>{
   }
   return true;
 }
+// The original evidence and operation identity remain immutable. A partial
+// batch can settle once every file is proven to be either original or repaired.
+async function writeOutcome(host:NativeHost,journal:Journal):Promise<"none"|"some"|"unknown">{
+  if(!journal.evidence?.length)return "unknown";
+  let applied=false;
+  for(const evidence of journal.evidence){
+    if(journal.unwritten_paths?.includes(evidence.path))continue;
+    try{
+      const adapter=host.app.vault.adapter;
+      const value=evidence.binary?await adapter.readBinary(evidence.path):await adapter.read(evidence.path);
+      const hash=await digest(value);
+      if(hash===evidence.after || evidence.marker&&typeof value==="string"&&value.includes(evidence.marker))applied=true;
+      else if(!evidence.before || hash!==evidence.before)return "unknown";
+    }catch{return "unknown";}
+  }
+  return applied?"some":"none";
+}
 export async function recoverNative(host:NativeHost):Promise<void>{
-  if(!host.settings.billingAccountLinked)return;
+  if(!host.settings.billingAccountLinked||host.nativeWriting)return;
   for(const journal of host.settings.operationJournal||[]){
     if(journal.protocol!=="v2"||journal.account!==owner(host)||!pendingStates.includes(journal.state))continue;
     try{
       const row=journal.operation_id?await api(host,"/billing/operations/"+encodeURIComponent(journal.operation_id)):await reserve(host,journal);
       validate(row,journal);
       if(row.state==="committed"||row.state==="denied")journal.state=row.state;
-      else if(row.state==="released")journal.state=journal.evidence?.length?"uncertain_released":"released";
-      else if(journal.state==="verified"||journal.state==="writing"&&await writesMatch(host,journal)){
+      else if(row.state==="released")journal.state=journal.evidence?.length&&(await writeOutcome(host,journal))!=="none"?"uncertain_released":"released";
+      else if(journal.state==="verified"||journal.state==="writing"&&(await writeOutcome(host,journal))==="some"){
         if((await settle(host,journal,"commit")).state==="committed")journal.state="committed";
+      }else if(journal.state==="writing"&&(await writeOutcome(host,journal))==="none"){
+        journal.state=(await settle(host,journal,"release")).state;
       }else if(journal.state==="requesting")journal.state="reserved";
       await host.persistNative();
     }catch(error){diagnostics.failure("native.recover",error);}
@@ -100,18 +119,29 @@ export async function reserveNative(host:NativeHost,appId:string,eventId:string,
       markWriting:async evidence=>{
         if(retained.state==="committed"&&retained.evidence?.length)return false;
         if(retained.state!=="reserved")throw new Error("The conversion reservation is no longer writable.");
-        retained.state="writing";retained.evidence=evidence;await host.persistNative();return true;
+        retained.state="writing";retained.evidence=evidence;await host.persistNative();host.nativeWriting=true;return true;
+      },
+      completeWrites:async paths=>{
+        if(retained.state!=="writing")return;
+        retained.unwritten_paths=[...new Set(paths)].filter(path=>retained.evidence?.some(e=>e.path===path));
+        await host.persistNative();host.nativeWriting=false;
       },
       commit:async()=>{
+        host.nativeWriting=false;
         if(retained.state==="committed")return {kind:"committed"};
         if(retained.state!=="writing"&&!reveal)throw new Error("The conversion has not been written.");
-        if(!reveal&&!await writesMatch(host,retained))return {kind:"pending"};
+        if(!reveal&&(await writeOutcome(host,retained))!=="some")return {kind:"pending"};
         retained.state="verified";await host.persistNative();
         try{if((await settle(host,retained,"commit")).state!=="committed")return {kind:"pending"};retained.state="committed";await host.persistNative();return {kind:"committed"};}
         catch(error){diagnostics.failure("native.commit",error);return {kind:"pending"};}
       },
       rollback:async()=>{
-        if(retained.state!=="reserved")return;
+        host.nativeWriting=false;
+        if(retained.state==="writing"){
+          const outcome=await writeOutcome(host,retained);
+          if(outcome==="unknown")return;
+          if(outcome==="some"){await reservation.commit();return;}
+        }else if(retained.state!=="reserved")return;
         const row=await settle(host,retained,"release");retained.state=row.state;await host.persistNative();
       }};
     if(reveal&&(await reservation.commit()).kind!=="committed")throw new Error("Confirmation is pending.");

@@ -105,6 +105,12 @@ export interface ScanProgress {
 }
 
 export interface ScanResult {
+  scope?: { kind: "vault" | "selection"; paths: string[] };
+  comparisonKey?: string;
+  settingsKey?: string;
+  dependencySignatures?: Record<string, string>;
+  notesIndexed?: number;
+  incremental?: boolean;
   findings: Finding[];
   errors: ScanError[];
   filesScanned: number;
