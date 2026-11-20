@@ -204,6 +204,7 @@ try {
     const getFiles = () => this.app.vault.getFiles().map((file) => ({ path: file.path, basename: file.basename, extension: file.extension, mtime: file.stat.mtime, size: file.stat.size }));
     return {
       getFiles,
+      resolveWikiPath: (target, sourcePath) => this.app.metadataCache.getFirstLinkpathDest(target, sourcePath)?.path,
       read: async (record) => {
 const diagnosticEnd5 = diagnostics?.start?.("main.background.7408") ?? (() => {});
 try {

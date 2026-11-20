@@ -20,12 +20,8 @@ Account requests send authentication and billing information to Constance. Passw
 
 Uncertain older billing records are retained and are never replayed as new v2 charges. Connect the original account and contact support if an earlier operation needs recovery.
 
-## Release
+## Version 3.4.80
 
-Version 3.4.78: Full and incremental scans, cancellable scans, repair reports, Undo and balance feedback were improved.
+Fix vault scanning, link resolution, and duplicate repair. Preserve repair labels.
 
-Obsidian Community release **3.4.78** requires Obsidian **1.5.0** or later. [GitHub release](https://github.com/tutivsoft-com/tool-app-Obsidian-Cairn-Vault-Linter/releases/tag/3.4.78).
-
-## Support
-
-Use the plugin's Help or Open documentation command and the support links in its manifest. For a billing problem, retain the original purchase or operation identity and use the account portal. Do not share passwords or session tokens.
+Requires Obsidian 1.5.0 or later. [GitHub releases](https://github.com/tutivsoft-com/tool-app-Obsidian-Cairn-Vault-Linter/releases).
